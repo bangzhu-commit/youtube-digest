@@ -9,6 +9,10 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "Interface language",
       heading: "Choose subtitles and AI service",
       providerLabel: "AI service", modelLabel: "Model ID",
+      translationQualityLabel: "Translation quality",
+      reviewedTranslation: "Reviewed: translate, compare, revise (default)",
+      quickTranslation: "Quick: one pass",
+      translationQualityHelp: "Reviewed mode adapts baoyu-translate's context, terminology and accuracy checks for subtitles. Each batch uses two model calls, takes longer and costs more. Quick mode uses one call. Translation caches are separate.",
       modelHelp: "Enter the exact ID from the selected service. Use a text chat model supporting JSON output. No model calls occur when saving.",
       aiKeyLabel: "AI API key (optional for transcript reading)", providerKeysLink: "Open provider key settings",
       transcriptModeLabel: "Subtitle source", nativeOnly: "YouTube page (no API key)",
@@ -85,6 +89,10 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "界面语言",
       heading: "选择字幕来源与模型平台",
       providerLabel: "模型平台", modelLabel: "模型 ID",
+      translationQualityLabel: "翻译质量",
+      reviewedTranslation: "精校：初译、对照审校与修订（默认）",
+      quickTranslation: "快速：单次翻译",
+      translationQualityHelp: "借鉴宝玉翻译的语境、术语和审校规则，适配字幕。精校每批调用模型两次，等待更久、费用更高；快速模式调用一次。两种模式的译文缓存分开保存。",
       modelHelp: "填写所选平台的准确模型 ID，使用支持 JSON 输出的文字聊天模型。保存设置不会调用模型。",
       aiKeyLabel: "模型 API Key（只读字幕可留空）", providerKeysLink: "打开该平台的 Key 管理页面",
       transcriptModeLabel: "字幕获取方式", nativeOnly: "直接读取 YouTube 页面（无需 Key）",
@@ -365,6 +373,7 @@ const YTD_OPTIONS = (() => {
     const providerInput = doc.getElementById("provider");
     const aiModelInput = doc.getElementById("aiModel");
     const transcriptProviderInput = doc.getElementById("transcriptProvider");
+    const translationQualityInput = doc.getElementById("translationQuality");
     const profilesKey = "ytd_provider_profiles";
     let profiles = {};
     let previousProvider = settingsApi.DEFAULTS.provider;
@@ -454,6 +463,7 @@ const YTD_OPTIONS = (() => {
         previousProvider = settings.provider;
         aiModelInput.value = settings.aiModel;
         transcriptProviderInput.value = settings.transcriptProvider;
+        translationQualityInput.value = settings.translationQuality;
         updateProviderLink();
 
         aiApiKeyInput.value = settings.aiApiKey;
@@ -484,6 +494,7 @@ const YTD_OPTIONS = (() => {
         provider: providerInput.value,
         aiModel: aiModelInput.value,
         transcriptProvider: transcriptProviderInput.value,
+        translationQuality: translationQualityInput.value,
         aiApiKey: aiApiKeyInput.value,
         supadataApiKey: supadataApiKeyInput.value,
       });

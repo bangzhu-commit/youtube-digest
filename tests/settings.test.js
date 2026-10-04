@@ -54,3 +54,11 @@ test("OpenRouter V4 Flash disables default reasoning without native DeepSeek fie
   const other = settings.completionBody(settings.normalize({ provider: "openrouter", aiModel: "openai/gpt-4.1-mini" }), request);
   assert.equal(Object.hasOwn(other, "reasoning"), false);
 });
+
+
+test("reviewed translation is the default for new and existing profiles; quick is explicit", () => {
+  assert.equal(settings.normalize().translationQuality, "reviewed");
+  assert.equal(settings.normalize({ provider: "openrouter", aiApiKey: "existing-key" }).translationQuality, "reviewed");
+  assert.equal(settings.normalize({ translationQuality: "quick" }).translationQuality, "quick");
+  assert.equal(settings.normalize({ translationQuality: "unknown" }).translationQuality, "reviewed");
+});

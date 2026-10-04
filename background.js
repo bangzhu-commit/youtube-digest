@@ -419,6 +419,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.contentType,
       message.targetLanguage,
       message.videoTitle,
+      message.translationQuality,
     )
       .then(sendResponse)
       .catch((err) => sendResponse({ success: false, error: err.message }));
@@ -433,6 +434,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           hasAiKey: !!settings.aiApiKey,
           transcriptProvider: settings.transcriptProvider,
           provider: settings.provider,
+          translationQuality: settings.translationQuality,
         }),
       )
       .catch((error) => sendResponse({ error: error.message }));
@@ -1575,6 +1577,22 @@ function looksLikeChineseTranslation(text, sourceText) {
   return /[\u3400-\u9fff]/.test(text);
 }
 
+function validateTranslationContext(context) {
+  if (context == null) return { before: "", after: "" };
+  if (typeof context !== "object" || Array.isArray(context)) {
+    throw new Error("Translation context must contain neighboring text only");
+  }
+  const result = {};
+  for (const key of ["before", "after"]) {
+    const text = context[key] ?? "";
+    if (typeof text !== "string" || text.length > 2000) {
+      throw new Error("Translation context is invalid or too long");
+    }
+    result[key] = text.trim();
+  }
+  return result;
+}
+
 /**
  * Aligns untrusted model output by exact stable ID. Missing, duplicated,
  * unknown, empty, or clearly non-Chinese values become explicit row errors.
@@ -1612,7 +1630,7 @@ function normalizeTranslatedSegmentBatch(parsed, sourceSegments) {
 }
 
 /**
- * Translates content using DeepSeek.
+ * Translates content using the selected provider, with optional source review.
  * @param {Object} content - JSON object containing semantic transcript segments
  * @param {string} contentType - 'transcriptBatch' or 'interfaceBatch'
  * @param {string} targetLanguage - 'zh' for Simplified Chinese
@@ -1624,6 +1642,7 @@ async function handleTranslateContent(
   contentType,
   targetLanguage,
   videoTitle,
+  requestedQuality,
 ) {
   try {
     if (targetLanguage !== "zh") {
@@ -1640,11 +1659,16 @@ async function handleTranslateContent(
     }
 
     const settings = await getSettings();
+    const quality = settings.translationQuality === "quick" ? "quick" : "reviewed";
+    if (requestedQuality && requestedQuality !== quality) {
+      return { success: false, error: "Translation settings changed. Reopen the side panel and Retry." };
+    }
     if (!settings.aiApiKey) {
       return { success: false, error: "AI provider API key not configured" };
     }
 
     const sourceSegments = validateTranscriptBatchRequest(content);
+    const context = validateTranslationContext(content?.context);
     const langName = "Simplified Chinese";
     const baseRules = await getTranslationBaseRules(targetLanguage);
     const promptSection =
@@ -1660,10 +1684,11 @@ async function handleTranslateContent(
         baseRules,
       },
     );
-    const userContent = JSON.stringify({ segments: sourceSegments });
+    const userContent = JSON.stringify({ segments: sourceSegments, context });
+    const sourceCharacters = sourceSegments.reduce((sum, segment) => sum + segment.text.length, 0);
     const translationOptions = {
       temperature: 0.2,
-      maxTokens: 1536,
+      maxTokens: Math.min(8192, Math.max(1536, Math.ceil(sourceCharacters * 1.6) + 512)),
       responseFormat: { type: "json_object" },
     };
     let result = await callAiTranslation(
@@ -1683,14 +1708,34 @@ async function handleTranslateContent(
     if (!result.success) return result;
 
     const parsed = parseLooseJson(result.text);
-    const aligned = normalizeTranslatedSegmentBatch(parsed, sourceSegments);
+    let aligned = normalizeTranslatedSegmentBatch(parsed, sourceSegments);
     if (!aligned.segments.some((segment) => segment.text)) {
       return {
         success: false,
         error: "Translation returned no valid Chinese segments",
       };
     }
-    return { success: true, translatedContent: aligned };
+    if (settings.translationQuality !== "quick") {
+      if (aligned.segments.some((segment) => !segment.text)) {
+        return { success: false, error: "初译缺少段落，请重试；未将不完整译文标记为精校结果。" };
+      }
+      const reviewPrompt = await loadPromptSection("translation.md", "Review and polish", {
+        langName, baseRules, videoTitle: videoTitle || "Unknown",
+      });
+      const reviewed = await callAiTranslation(reviewPrompt, JSON.stringify({
+        source: { segments: sourceSegments, context },
+        draft: { segments: aligned.segments.map(({ id, text }) => ({ id, text })) },
+      }), { ...translationOptions, temperature: 0.1 });
+      if (!reviewed.success) {
+        return { ...reviewed, error: `精校未完成：${reviewed.error || "请重试"}` };
+      }
+      aligned = normalizeTranslatedSegmentBatch(parseLooseJson(reviewed.text), sourceSegments);
+      if (aligned.segments.some((segment) => !segment.text)) {
+        return { success: false, error: "精校未返回完整中文段落，请重试。" };
+      }
+    }
+    return { success: true, translatedContent: aligned,
+      quality: settings.translationQuality === "quick" ? "quick" : "reviewed" };
   } catch (error) {
     console.error("[YouTube Digest] Translation error:", error);
     return { success: false, error: error.message || "Translation failed" };
@@ -1698,7 +1743,7 @@ async function handleTranslateContent(
 }
 
 /**
- * Makes a single DeepSeek call for translation.
+ * Makes a single call to the selected provider for translation.
  * Uses temperature 0.3 for consistent, predictable translations.
  *
  * @param {string} systemPrompt - The system-level instructions
@@ -1736,6 +1781,7 @@ async function callAiTranslation(
 
 // Pure validators are exposed for the repository's Node tests only.
 globalThis.__YTD_TRANSLATION_TESTING__ = {
+  validateTranslationContext,
   handleFetchTranscript,
   requestAiCompletion,
   callAiTranslation,

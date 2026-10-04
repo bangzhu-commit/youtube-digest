@@ -91,6 +91,12 @@
           <label for="aiModel" data-i18n="modelLabel">Model ID</label>
           <input id="aiModel" name="aiModel" type="text" autocomplete="off" spellcheck="false" required />
           <p class="help" data-i18n="modelHelp">Enter the exact model ID from your provider. Select a chat model that supports JSON output.</p>
+          <label for="translationQuality" data-i18n="translationQualityLabel">Translation quality</label>
+          <select id="translationQuality" name="translationQuality">
+            <option value="reviewed" data-i18n="reviewedTranslation">Reviewed: translate, compare, revise</option>
+            <option value="quick" data-i18n="quickTranslation">Quick: one pass</option>
+          </select>
+          <p class="help" data-i18n="translationQualityHelp">Reviewed mode uses two model calls per batch. Quick mode uses one. New translations are cached separately.</p>
           <label for="aiApiKey" data-i18n="aiKeyLabel">AI API key (optional for transcript reading)</label>
           <input id="aiApiKey" name="aiApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your AI provider key" />
           <p class="help"><a id="providerKeysLink" href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer" data-i18n="providerKeysLink">Open provider key settings</a></p>

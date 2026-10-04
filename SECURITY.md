@@ -1,6 +1,6 @@
 # Security: local modified version
 
-Install from the reviewed local source directory. Preserve the original MIT license and verify updates before reloading.
+Install from the reviewed local source directory. Preserve the original MIT license, the adapted translation rules' third-party notice, and verify updates before reloading.
 
 Enter keys only in the extension Settings. Never include them in source, chat, logs, screenshots or commits. Keys for OpenRouter, 302.ai and DeepSeek are separate and switching platforms does not reuse a different platform's key. Native caption extraction receives only the video ID, never credentials. API requests are made by the extension's trusted service worker to fixed provider endpoints.
 

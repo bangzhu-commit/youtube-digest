@@ -37,6 +37,8 @@ const DISPLAY_LANGUAGE_MODE_KEY = "ytd_display_language_modes_by_video";
 const DISPLAY_LANGUAGE_MODES = new Set(["original", "zh", "bilingual"]);
 let translationGeneration = 0; // Invalidates responses from older UI modes/videos.
 let translationWorkCount = 0;
+let currentTranslationQuality = "reviewed";
+const TRANSLATION_PIPELINE_VERSION = "baoyu-subtitles-v1";
 let transcriptScrollObserver = null;
 // Stable keys include the video, source mode, language, and semantic segment ID.
 let transcriptParagraphCache = new Map();
@@ -45,7 +47,7 @@ let interfaceTranslationInFlight = new Set();
 let interfaceTranslationFailures = new Set();
 let currentNotes = [];
 let currentNotesFilterVideoId = null;
-const TRANSLATION_MESSAGE_TIMEOUT_MS = 130_000;
+const TRANSLATION_MESSAGE_TIMEOUT_MS = 260_000;
 const TRANSLATION_BATCH_SIZE = 3;
 
 // --- Transcript search state ---
@@ -74,14 +76,17 @@ function sendTranslationMessage(message) {
       finish(
         reject,
         new Error(
-          "Translation request timed out after 130 seconds. Please Retry.",
+          "Translation request timed out after 260 seconds. Please Retry.",
         ),
       );
     }, TRANSLATION_MESSAGE_TIMEOUT_MS);
 
     let messagePromise;
     try {
-      messagePromise = chrome.runtime.sendMessage(message);
+      messagePromise = chrome.runtime.sendMessage({
+        ...message,
+        translationQuality: currentTranslationQuality,
+      });
     } catch (error) {
       finish(reject, error);
       return;
@@ -256,6 +261,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   setTranscriptModeButtons("original");
   setupEventListeners();
   await evictOldCacheEntries(20);
+
+  try {
+    const config = await chrome.runtime.sendMessage({ action: "checkConfig" });
+    currentTranslationQuality = config?.translationQuality === "quick" ? "quick" : "reviewed";
+  } catch (_) { /* Use the reviewed default if the service worker is restarting. */ }
 
   await checkCurrentTab();
 });
@@ -707,7 +717,7 @@ async function startDigest(videoId, videoUrl) {
 // ============================================================
 
 function interfaceTranslationCacheKey(surface, id, text) {
-  return `${currentVideoId || "none"}:zh:${surface}:${id}:${text}`;
+  return `${currentVideoId || "none"}:zh:${TRANSLATION_PIPELINE_VERSION}:${currentTranslationQuality}:${surface}:${id}:${text}`;
 }
 
 function getInterfaceTranslation(surface, id, text) {
@@ -2546,7 +2556,16 @@ function getActiveTranscriptSegments() {
 }
 
 function transcriptTranslationCacheKey(segment) {
-  return `${currentVideoId}:zh:semantic:${segment.id}`;
+  return `${currentVideoId}:zh:${TRANSLATION_PIPELINE_VERSION}:${currentTranslationQuality}:semantic:${segment.id}`;
+}
+
+function getNeighboringTranscriptContext(indices, segments) {
+  const first = Math.min(...indices);
+  const last = Math.max(...indices);
+  return {
+    before: segments.slice(Math.max(0, first - 2), first).map((segment) => segment.text).join(" ").slice(-2000),
+    after: segments.slice(last + 1, last + 3).map((segment) => segment.text).join(" ").slice(0, 2000),
+  };
 }
 
 function setTranscriptModeButtons(mode) {
@@ -2736,6 +2755,7 @@ async function requestTranscriptTranslationBatch(
       action: "translateContent",
       content: {
         segments: sourceBatch.map(({ id, text }) => ({ id, text })),
+        context: getNeighboringTranscriptContext(indices, segments),
       },
       contentType: "transcriptBatch",
       targetLanguage: "zh",
@@ -2885,6 +2905,9 @@ function setTranslatingSpinner(show) {
 // Pure helpers are exposed for the repository's Node tests. The extension does
 // not read this object at runtime.
 globalThis.__YTD_TRANSCRIPT_TESTING__ = {
+  getNeighboringTranscriptContext,
+  transcriptTranslationCacheKey,
+  interfaceTranslationCacheKey,
   sendTranslationMessage,
   groupTranscriptEntries,
   splitOversizedThought,

@@ -18,6 +18,7 @@ var YTD_SETTINGS = (() => {
     aiModel: PROVIDERS.openrouter.model,
     supadataApiKey: "",
     transcriptProvider: "native",
+    translationQuality: "reviewed",
   });
 
   function isLegacyCustom(input) {
@@ -45,6 +46,7 @@ var YTD_SETTINGS = (() => {
           : "",
       transcriptProvider: ["native", "native-fallback", "supadata"].includes(input.transcriptProvider)
         ? input.transcriptProvider : "native",
+      translationQuality: input.translationQuality === "quick" ? "quick" : "reviewed",
     };
   }
 

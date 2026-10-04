@@ -48,6 +48,7 @@ public_allowlist=(
   "PRIVACY.md"
   "SECURITY.md"
   "LICENSE"
+  "THIRD_PARTY_NOTICES.md"
 )
 
 required_public_files=(
@@ -67,6 +68,7 @@ required_public_files=(
   "PRIVACY.md"
   "SECURITY.md"
   "LICENSE"
+  "THIRD_PARTY_NOTICES.md"
 )
 
 for file in "${required_public_files[@]}"; do

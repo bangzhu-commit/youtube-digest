@@ -76,6 +76,7 @@ function loadBackgroundHelpers({
     aiApiKey: "test-key",
     aiBaseUrl: "https://api.deepseek.com",
     aiModel: "deepseek-v4-flash",
+    translationQuality: "quick",
   },
   fetchImpl = fetch,
   setTimeoutImpl = () => 0,
@@ -772,9 +773,9 @@ test("translation message watchdog rejects, clears its timer, and ignores late r
   const request = helpers.sendTranslationMessage({
     action: "translateContent",
   });
-  assert.equal(timeoutDelay, 130_000);
+  assert.equal(timeoutDelay, 260_000);
   timeoutCallback();
-  await assert.rejects(request, /timed out after 130 seconds.*Retry/i);
+  await assert.rejects(request, /timed out after 260 seconds.*Retry/i);
   assert.equal(clearCount, 1);
 
   resolveMessage({ success: true });
@@ -811,4 +812,109 @@ test("Chinese prompt preserves natural bilingual-learning style rules", () => {
   assert.match(prompt, /Use 你, never 您/);
   assert.match(prompt, /spaces between Chinese and adjacent English words or digits/);
   assert.match(prompt, /source-language `text`/);
+});
+
+
+function translationFixture(replies, quality = "reviewed") {
+  const requests = [];
+  const settings = require("../settings.js").normalize({
+    provider: "openrouter", aiApiKey: "test-key", translationQuality: quality,
+  });
+  const helpers = loadBackgroundHelpers({ settings, fetchImpl: async (url, options) => {
+    if (url.startsWith("chrome-extension://")) {
+      return { ok: true, text: async () => read("prompts/translation.md") };
+    }
+    requests.push(JSON.parse(options.body));
+    const reply = replies[requests.length - 1];
+    if (reply instanceof Error) throw reply;
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify(reply) } }] }) };
+  } });
+  return { helpers, requests };
+}
+
+test("reviewed translation sends source, neighboring context and draft to a separate revision call", async () => {
+  const content = {
+    segments: [{ id: "segment-1-5000", text: "It did not happen in 2025. My back-of-the-envelope calculation was wrong." }],
+    context: { before: "We are discussing the experiment.", after: "It happened in 2026." },
+  };
+  const draft = { segments: [{ id: "segment-1-5000", text: "这发生在 2025 年。我的信封背面计算错了。" }] };
+  const revised = { segments: [{ id: "segment-1-5000", text: "这并没有发生在 2025 年。我的粗略估算错了。" }] };
+  const { helpers, requests } = translationFixture([draft, revised]);
+  const result = await helpers.handleTranslateContent(content, "transcriptBatch", "zh", "Experiment");
+  assert.equal(result.success, true);
+  assert.equal(result.quality, "reviewed");
+  assert.equal(result.translatedContent.segments[0].text, revised.segments[0].text);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(JSON.parse(requests[0].messages[1].content), content);
+  const reviewInput = JSON.parse(requests[1].messages[1].content);
+  assert.deepEqual(reviewInput.source, content);
+  assert.deepEqual(reviewInput.draft, draft);
+  assert.match(requests[1].messages[0].content, /original source/);
+  assert.match(requests[1].messages[0].content, /negation, numbers, dates/);
+  assert.equal(requests[1].temperature, 0.1);
+});
+
+test("review failure or missing source IDs cannot turn an unreviewed draft into success", async () => {
+  const content = { segments: [{ id: "s1", text: "This English sentence needs careful translation." }] };
+  const draft = { segments: [{ id: "s1", text: "这句英文需要认真翻译。" }] };
+  for (const reply of [new Error("Provider unavailable"), { segments: [{ id: "wrong-id", text: "这不是对应的段落。" }] }]) {
+    const { helpers, requests } = translationFixture([draft, reply]);
+    const result = await helpers.handleTranslateContent(content, "transcriptBatch", "zh", "Video");
+    assert.equal(result.success, false);
+    assert.match(result.error, /精校/);
+    assert.equal(result.translatedContent, undefined);
+    assert.equal(requests.length, 2);
+  }
+});
+
+test("an incomplete draft stops before the paid review call", async () => {
+  const content = { segments: [
+    { id: "s1", text: "First complete English source sentence." },
+    { id: "s2", text: "Second complete English source sentence." },
+  ] };
+  const { helpers, requests } = translationFixture([{ segments: [{ id: "s1", text: "第一句完整英文。" }] }]);
+  const result = await helpers.handleTranslateContent(content, "transcriptBatch", "zh", "Video");
+  assert.equal(result.success, false);
+  assert.match(result.error, /初译缺少/);
+  assert.equal(requests.length, 1);
+});
+
+test("neighbor context remains bounded and excludes the requested subtitle rows", () => {
+  const { getNeighboringTranscriptContext } = loadSidepanelHelpers();
+  const segments = ["Earlier", "Before", "Translate this", "And this", "After", "Later"].map(text => ({ text }));
+  assert.deepEqual(JSON.parse(JSON.stringify(getNeighboringTranscriptContext([2, 3], segments))), { before: "Earlier Before", after: "After Later" });
+  assert.equal(getNeighboringTranscriptContext([0], segments).before, "");
+  assert.equal(getNeighboringTranscriptContext([5], segments).after, "");
+  assert.equal(getNeighboringTranscriptContext([1], [{ text: "x".repeat(2500) }, { text: "source" }, { text: "y".repeat(2500) }]).before.length, 2000);
+});
+
+test("invalid neighboring context is rejected before any provider call", async () => {
+  for (const context of ["not an object", { before: "x".repeat(2001) }, { after: 1 }]) {
+    const { helpers, requests } = translationFixture([]);
+    const result = await helpers.handleTranslateContent({ segments: [{ id: "s1", text: "Source English sentence." }], context }, "transcriptBatch", "zh", "Video");
+    assert.equal(result.success, false);
+    assert.equal(requests.length, 0);
+  }
+});
+
+test("changed quality settings cannot write a quick response into a reviewed cache", async () => {
+  const { helpers, requests } = translationFixture([], "quick");
+  const result = await helpers.handleTranslateContent({ segments: [{ id: "s1", text: "Source English sentence." }] }, "transcriptBatch", "zh", "Video", "reviewed");
+  assert.equal(result.success, false);
+  assert.match(result.error, /settings changed/);
+  assert.equal(requests.length, 0);
+  const panel = loadSidepanelHelpers();
+  assert.match(panel.transcriptTranslationCacheKey({ id: "s1" }), /baoyu-subtitles-v1:reviewed:semantic:s1$/);
+  assert.match(panel.interfaceTranslationCacheKey("overview", "s1", "Source"), /baoyu-subtitles-v1:reviewed:overview:/);
+});
+
+test("large valid batches receive bounded output room without losing source text", async () => {
+  const content = { segments: Array.from({ length: 3 }, (_, index) => ({ id: `s${index}`, text: "word ".repeat(780).trim() })) };
+  const { helpers, requests } = translationFixture([{ segments: content.segments.map(({ id }) => ({ id, text: "完整译文。" })) }], "quick");
+  const result = await helpers.handleTranslateContent(content, "transcriptBatch", "zh", "Video");
+  assert.equal(result.success, true);
+  assert.equal(result.quality, "quick");
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].max_tokens, 8192);
+  assert.deepEqual(JSON.parse(requests[0].messages[1].content).segments, content.segments);
 });

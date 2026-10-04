@@ -22,6 +22,10 @@ Endpoints: OpenRouter `https://openrouter.ai/api/v1/chat/completions`; 302.ai `h
 
 Select **YouTube page** for subtitles. This is the default and never sends requests to Supadata. If you choose a Supadata mode, enter a separate Supadata key. Supadata requests force `mode=native` and never purchase generated transcripts. Inspect each provider's current pricing in its dashboard.
 
+## Translation quality
+
+The default Reviewed mode adapts baoyu-translate: neighboring subtitle context and consistent terminology guide the draft, then a separate model call compares it with the original and revises the Chinese. This compact subtitle workflow uses two model calls per batch; it is not the full article refinement pipeline. Quick mode uses one call. Choose the mode in Settings and reopen the side panel. New-version and mode-specific cache keys prevent old translations from masking the change. API costs and waiting time increase in Reviewed mode; automatic-caption errors can still affect the result. The original transcript and timestamps stay aligned. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and license.
+
 ## Limits and validation
 
 Chrome 116+, standard public `youtube.com/watch` pages with captions. YouTube page structures and caption endpoints can change; direct extraction is best-effort. If it fails, manually open Show transcript and retry, or select Supadata fallback. Videos without captions require separate speech transcription, which this version does not perform. Shorts, live and restricted videos are not verified.
