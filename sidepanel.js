@@ -257,15 +257,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   setupEventListeners();
   await evictOldCacheEntries(20);
 
-  const configStatus = await chrome.runtime.sendMessage({
-    action: "checkConfig",
-  });
-
-  if (!configStatus.hasSupadataKey || !configStatus.hasAiKey) {
-    showConfigError(configStatus);
-    return;
-  }
-
   await checkCurrentTab();
 });
 
@@ -667,8 +658,10 @@ async function startDigest(videoId, videoUrl) {
   const transcriptResult = await chrome.runtime.sendMessage({
     action: "fetchTranscript",
     videoId: videoId,
+    tabId: youtubeTabId,
   });
 
+  if (currentVideoId !== videoId) return;
   if (!transcriptResult.success) {
     if (transcriptResult.error === "NO_SUPADATA_KEY") {
       showError(

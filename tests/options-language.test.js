@@ -153,9 +153,9 @@ test("customization prompt switches languages and preserves technical values", (
   const chinesePrompt = options.translate("zh-CN", "customizationPrompt");
 
   assert.match(html, /placeholder="Paste your Supadata key"/);
-  assert.match(html, /placeholder="Paste your DeepSeek key"/);
+  assert.match(html, /placeholder="Paste your AI provider key"/);
   assert.match(html, /https:\/\/dash\.supadata\.ai\/auth\/sign-up/);
-  assert.match(html, /https:\/\/platform\.deepseek\.com\/api_keys/);
+  assert.match(read("settings.js"), /https:\/\/platform\.deepseek\.com\/api_keys/);
   assert.ok(html.includes(`>${englishPrompt}</textarea>`));
   assert.match(chinesePrompt, /^请把当前本地 YouTube Digest 工作区改为使用/);
   assert.notEqual(chinesePrompt, englishPrompt);

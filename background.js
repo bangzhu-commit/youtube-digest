@@ -14,6 +14,7 @@
 // Import safe defaults and validation helpers. Secret keys live in
 // chrome.storage.local and are never part of the extension source.
 importScripts("settings.js");
+importScripts("native-transcript.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
@@ -81,22 +82,12 @@ async function requestAiCompletion({
   const settings = await getSettings();
   if (!settings.aiApiKey) {
     const error = new Error(
-      "DeepSeek API key not configured. Open YouTube Digest Settings.",
+      "AI provider API key not configured. Open YouTube Digest Settings.",
     );
     error.code = "NO_AI_KEY";
     throw error;
   }
-  const body = {
-    model: settings.aiModel,
-    max_tokens: maxTokens,
-    messages,
-  };
-  if (typeof temperature === "number") body.temperature = temperature;
-  if (responseFormat) {
-    body.response_format = responseFormat;
-  }
-  // Product features need bounded, predictable latency rather than reasoning traces.
-  body.thinking = { type: "disabled" };
+  const body = YTD_SETTINGS.completionBody(settings, { messages, maxTokens, temperature, responseFormat });
 
   const controller = new AbortController();
   let timeoutKind = "";
@@ -122,11 +113,12 @@ async function requestAiCompletion({
   resetIdleTimeout();
   try {
     const response = await fetch(
-      YTD_SETTINGS.chatCompletionsUrl(),
+      YTD_SETTINGS.chatCompletionsUrl(settings),
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Accept: "application/json",
           Authorization: `Bearer ${settings.aiApiKey}`,
         },
         body: JSON.stringify(body),
@@ -143,7 +135,7 @@ async function requestAiCompletion({
       const error = new Error(
         errorData.error?.message ||
           errorData.message ||
-          `DeepSeek error: ${response.status}`,
+          `AI provider error: ${response.status}`,
       );
       error.status = response.status;
       throw error;
@@ -151,7 +143,7 @@ async function requestAiCompletion({
 
     const text = data.choices?.[0]?.message?.content;
     if (typeof text !== "string" || !text.trim()) {
-      const error = new Error("DeepSeek returned an empty response.");
+      const error = new Error("AI provider returned an empty response.");
       error.code = "EMPTY_AI_RESPONSE";
       throw error;
     }
@@ -160,14 +152,14 @@ async function requestAiCompletion({
   } catch (error) {
     if (timeoutKind === "idle") {
       const timeoutError = new Error(
-        "DeepSeek request was inactive for 50 seconds. Please Retry.",
+        "AI provider request was inactive for 50 seconds. Please Retry.",
       );
       timeoutError.code = "AI_IDLE_TIMEOUT";
       throw timeoutError;
     }
     if (timeoutKind === "hard") {
       const timeoutError = new Error(
-        "DeepSeek request exceeded the 120-second limit. Please Retry.",
+        "AI provider request exceeded the 120-second limit. Please Retry.",
       );
       timeoutError.code = "AI_HARD_TIMEOUT";
       throw timeoutError;
@@ -194,7 +186,7 @@ async function readBoundedAiResponse(response, onActivity) {
       responseBytes += byteLength;
       if (responseBytes > AI_PROVIDER_MAX_RESPONSE_BYTES) {
         await reader.cancel?.().catch(() => {});
-        const error = new Error("DeepSeek response exceeded the 2 MiB limit.");
+        const error = new Error("AI provider response exceeded the 2 MiB limit.");
         error.code = "AI_RESPONSE_TOO_LARGE";
         throw error;
       }
@@ -211,7 +203,7 @@ async function readBoundedAiResponse(response, onActivity) {
     onActivity();
     const byteLength = new TextEncoder().encode(responseText).byteLength;
     if (byteLength > AI_PROVIDER_MAX_RESPONSE_BYTES) {
-      const error = new Error("DeepSeek response exceeded the 2 MiB limit.");
+      const error = new Error("AI provider response exceeded the 2 MiB limit.");
       error.code = "AI_RESPONSE_TOO_LARGE";
       throw error;
     }
@@ -350,7 +342,7 @@ chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // We need to return true to indicate we'll respond asynchronously
   if (message.action === "fetchTranscript") {
-    handleFetchTranscript(message.videoId)
+    handleFetchTranscript(message.videoId, message.tabId)
       .then(sendResponse)
       .catch((err) => sendResponse({ error: err.message }));
     return true; // Keep the message channel open for async response
@@ -439,6 +431,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({
           hasSupadataKey: !!settings.supadataApiKey,
           hasAiKey: !!settings.aiApiKey,
+          transcriptProvider: settings.transcriptProvider,
+          provider: settings.provider,
         }),
       )
       .catch((error) => sendResponse({ error: error.message }));
@@ -639,7 +633,33 @@ async function getPlayerVideoDetails(tabId) {
  * @param {string} videoId - The YouTube video ID (e.g., "dQw4w9WgXcQ")
  * @returns {Object} - { success, transcript, transcriptText, language } or { success: false, error }
  */
-async function handleFetchTranscript(videoId) {
+async function handleFetchTranscript(videoId, tabId) {
+  const settings = await getSettings();
+  // Never charge the optional transcript provider unless explicitly selected.
+  if (settings.transcriptProvider === "supadata") return handleFetchSupadataTranscript(videoId);
+  let result;
+  try {
+    YTD_SETTINGS.canonicalYouTubeUrl(videoId);
+    if (!Number.isInteger(tabId)) throw new Error("YouTube tab unavailable");
+    const tab = await chrome.tabs.get(tabId);
+    if (new URL(tab.url).origin !== "https://www.youtube.com"
+      || new URL(tab.url).searchParams.get("v") !== videoId) throw new Error("Video changed");
+    const injected = await chrome.scripting.executeScript({
+      target: { tabId }, world: "MAIN", func: readNativeTranscript, args: [videoId],
+    });
+    result = injected[0]?.result || { success: false, error: "NATIVE_TRANSCRIPT_UNAVAILABLE" };
+  } catch (_) {
+    result = { success: false, error: "NATIVE_TRANSCRIPT_UNAVAILABLE",
+      message: "无法读取当前 YouTube 页面字幕。请刷新视频或先打开‘显示文字记录’后重试。" };
+  }
+  if (result.success || result.error === "VIDEO_CHANGED") return result;
+  if (settings.transcriptProvider === "native-fallback" && settings.supadataApiKey) {
+    return handleFetchSupadataTranscript(videoId);
+  }
+  return result;
+}
+
+async function handleFetchSupadataTranscript(videoId) {
   try {
     const settings = await getSettings();
     if (!settings.supadataApiKey) {
@@ -921,7 +941,7 @@ async function handleAnalyzeTranscript(
       return {
         success: false,
         error: "NO_AI_KEY",
-        message: "DeepSeek API key not configured. Open YouTube Digest Settings.",
+        message: "AI provider API key not configured. Open YouTube Digest Settings.",
       };
     }
 
@@ -1002,14 +1022,14 @@ async function handleAnalyzeTranscript(
       return {
         success: false,
         error: "INVALID_AI_KEY",
-        message: "DeepSeek rejected the API key.",
+        message: "AI provider rejected the API key.",
       };
     }
     if (error.status === 429) {
       return {
         success: false,
         error: "RATE_LIMITED",
-        message: "DeepSeek rate-limited this request. Try again shortly.",
+        message: "AI provider rate-limited this request. Try again shortly.",
       };
     }
     return {
@@ -1453,7 +1473,7 @@ async function handleExplainSelection(
       return {
         success: false,
         error: "NO_AI_KEY",
-        message: "DeepSeek API key not configured.",
+        message: "AI provider API key not configured.",
       };
     }
 
@@ -1621,7 +1641,7 @@ async function handleTranslateContent(
 
     const settings = await getSettings();
     if (!settings.aiApiKey) {
-      return { success: false, error: "DeepSeek API key not configured" };
+      return { success: false, error: "AI provider API key not configured" };
     }
 
     const sourceSegments = validateTranscriptBatchRequest(content);
@@ -1654,7 +1674,7 @@ async function handleTranslateContent(
 
     // DeepSeek JSON mode can rarely return an empty content string. The prompt
     // already requires JSON, so retry once without response_format.
-    if (!result.success && result.code === "EMPTY_AI_RESPONSE") {
+    if (settings.provider === "deepseek" && !result.success && result.code === "EMPTY_AI_RESPONSE") {
       result = await callAiTranslation(systemPrompt, userContent, {
         temperature: translationOptions.temperature,
         maxTokens: translationOptions.maxTokens,
@@ -1716,6 +1736,7 @@ async function callAiTranslation(
 
 // Pure validators are exposed for the repository's Node tests only.
 globalThis.__YTD_TRANSLATION_TESTING__ = {
+  handleFetchTranscript,
   requestAiCompletion,
   callAiTranslation,
   validateTranscriptBatchRequest,

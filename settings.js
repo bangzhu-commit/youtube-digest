@@ -6,12 +6,18 @@
  */
 var YTD_SETTINGS = (() => {
   const STORAGE_KEY = "ytd_settings";
+  const PROVIDERS = Object.freeze({
+    openrouter: { name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-flash", keysUrl: "https://openrouter.ai/settings/keys" },
+    "302ai": { name: "302.ai", baseUrl: "https://api.302.ai/v1", model: "gpt-4o-mini", keysUrl: "https://302.ai/" },
+    deepseek: { name: "DeepSeek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash", keysUrl: "https://platform.deepseek.com/api_keys" },
+  });
   const DEFAULTS = Object.freeze({
-    provider: "deepseek",
+    provider: "openrouter",
     aiApiKey: "",
-    aiBaseUrl: "https://api.deepseek.com",
-    aiModel: "deepseek-v4-flash",
+    aiBaseUrl: PROVIDERS.openrouter.baseUrl,
+    aiModel: PROVIDERS.openrouter.model,
     supadataApiKey: "",
+    transcriptProvider: "native",
   });
 
   function isLegacyCustom(input) {
@@ -19,19 +25,26 @@ var YTD_SETTINGS = (() => {
   }
 
   function normalize(input = {}) {
+    input = input || {};
+    const provider = Object.hasOwn(PROVIDERS, input.provider) ? input.provider : DEFAULTS.provider;
+    const preset = PROVIDERS[provider];
+    const knownProvider = !input.provider || Object.hasOwn(PROVIDERS, input.provider);
     return {
-      provider: DEFAULTS.provider,
-      aiApiKey: isLegacyCustom(input)
+      provider,
+      aiApiKey: !knownProvider
         ? ""
         : typeof input.aiApiKey === "string"
           ? input.aiApiKey.trim()
           : "",
-      aiBaseUrl: DEFAULTS.aiBaseUrl,
-      aiModel: DEFAULTS.aiModel,
+      aiBaseUrl: preset.baseUrl,
+      aiModel: knownProvider && typeof input.aiModel === "string" && input.aiModel.trim()
+        ? input.aiModel.trim() : preset.model,
       supadataApiKey:
         typeof input.supadataApiKey === "string"
           ? input.supadataApiKey.trim()
           : "",
+      transcriptProvider: ["native", "native-fallback", "supadata"].includes(input.transcriptProvider)
+        ? input.transcriptProvider : "native",
     };
   }
 
@@ -42,8 +55,21 @@ var YTD_SETTINGS = (() => {
     };
   }
 
-  function chatCompletionsUrl() {
-    return `${DEFAULTS.aiBaseUrl}/chat/completions`;
+  function chatCompletionsUrl(input = DEFAULTS) {
+    return `${normalize(input).aiBaseUrl}/chat/completions`;
+  }
+
+  function completionBody(settings, { messages, maxTokens, temperature, responseFormat }) {
+    const body = { model: settings.aiModel, max_tokens: maxTokens, messages };
+    if (typeof temperature === "number") body.temperature = temperature;
+    if (responseFormat) body.response_format = responseFormat;
+    if (settings.provider === "deepseek") body.thinking = { type: "disabled" };
+    // OpenRouter uses its own unified reasoning field, not DeepSeek's native one.
+    // This exact model supports non-thinking mode; other model IDs are untouched.
+    if (settings.provider === "openrouter" && settings.aiModel === "deepseek/deepseek-v4-flash") {
+      body.reasoning = { enabled: false };
+    }
+    return body;
   }
 
   function canonicalYouTubeUrl(videoId) {
@@ -57,10 +83,12 @@ var YTD_SETTINGS = (() => {
   return {
     STORAGE_KEY,
     DEFAULTS,
+    PROVIDERS,
     isLegacyCustom,
     normalize,
     migrateLegacyCustom,
     chatCompletionsUrl,
+    completionBody,
     canonicalYouTubeUrl,
   };
 })();

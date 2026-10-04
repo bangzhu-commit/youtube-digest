@@ -130,15 +130,46 @@ function loadBackgroundHelpers({
     YTD_SETTINGS: {
       STORAGE_KEY: "ytd_settings",
       normalize: (value) => value,
-      chatCompletionsUrl: (baseUrl) => `${baseUrl}/chat/completions`,
+      chatCompletionsUrl: (settings) => `${settings.aiBaseUrl}/chat/completions`,
+      completionBody: require("../settings.js").completionBody,
       canonicalYouTubeUrl: (videoId) =>
         `https://www.youtube.com/watch?v=${videoId}`,
     },
   };
   sandbox.globalThis = sandbox;
+  sandbox.readNativeTranscript = () => {};
+  sandbox.chrome.tabs.get = async () => ({ url: "https://www.youtube.com/watch?v=ydTeb_I0b94" });
+  sandbox.chrome.scripting = { executeScript: async () => [{ result: { success: true, source: "youtube-captions", transcript: [{ text: "Caption", start: 0 }], transcriptText: "Caption" } }] };
   vm.runInNewContext(read("background.js"), sandbox);
   return sandbox.__YTD_TRANSLATION_TESTING__;
 }
+
+test("native mode retrieves subtitles without sending keys or charging Supadata", async () => {
+  let calls = 0;
+  const background = loadBackgroundHelpers({
+    settings: { provider: "openrouter", transcriptProvider: "native", aiApiKey: "", supadataApiKey: "optional-key" },
+    fetchImpl: async () => { calls++; throw new Error("Paid API must not run"); },
+  });
+  const result = await background.handleFetchTranscript("ydTeb_I0b94", 17);
+  assert.equal(result.success, true);
+  assert.equal(result.source, "youtube-captions");
+  assert.equal(calls, 0);
+});
+
+test("OpenRouter and 302.ai requests use their endpoints without DeepSeek fields", async () => {
+  for (const provider of ["openrouter", "302ai"]) {
+    const settings = require("../settings.js").normalize({ provider, aiApiKey: "selected-provider-key" });
+    let request;
+    const background = loadBackgroundHelpers({ settings, fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "translated" } }] }) };
+    } });
+    assert.equal((await background.requestAiCompletion({ messages: [{ role: "user", content: "Translate" }], maxTokens: 128 })).text, "translated");
+    assert.equal(request.url, `${settings.aiBaseUrl}/chat/completions`);
+    assert.equal(request.options.headers.Authorization, "Bearer selected-provider-key");
+    assert.equal(Object.hasOwn(JSON.parse(request.options.body), "thinking"), false);
+  }
+});
 
 test("non-YouTube tabs explicitly close before their panel is disabled", async () => {
   const calls = [];

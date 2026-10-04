@@ -7,12 +7,18 @@ const YTD_OPTIONS = (() => {
     en: {
       pageTitle: "YouTube Digest Settings",
       languageGroupLabel: "Interface language",
-      heading: "Bring your own API keys",
+      heading: "Choose subtitles and AI service",
+      providerLabel: "AI service", modelLabel: "Model ID",
+      modelHelp: "Enter the exact ID from the selected service. Use a text chat model supporting JSON output. No model calls occur when saving.",
+      aiKeyLabel: "AI API key (optional for transcript reading)", providerKeysLink: "Open provider key settings",
+      transcriptModeLabel: "Subtitle source", nativeOnly: "YouTube page (no API key)",
+      nativeFallback: "YouTube first, then Supadata (uses credits)", supadataOnly: "Supadata only (uses credits)",
+      nativeHelp: "Reads captions or opens YouTube's own transcript panel. No speech transcription. Direct reading may fail after YouTube changes.",
       lede:
-        "Keys stay in this Chrome profile and are sent only to Supadata and DeepSeek. This open-source extension has no developer server or analytics.",
+        "Local version: YouTube captions need no API key. OpenRouter, 302.ai and DeepSeek are supported. Keys stay in this Chrome profile; there is no developer server.",
       transcriptProvider: "Transcript provider",
-      supadataApiKeyLabel: "Supadata API key",
-      supadataHelp: "Used to fetch timestamped YouTube subtitles. ",
+      supadataApiKeyLabel: "Supadata API key (optional)",
+      supadataHelp: "Used only if a Supadata mode is selected. Requests consume Supadata credits. ",
       supadataLink: "Create a Supadata account and key",
       supadataHelpSuffix:
         ". Supadata generates the key during onboarding.",
@@ -25,7 +31,7 @@ const YTD_OPTIONS = (() => {
       deepseekLink: "Create a DeepSeek API key",
       deepseekHelpSuffix: ".",
       privacyNote:
-        "When you use AI features, DeepSeek receives the video transcript and relevant video context. Review DeepSeek's terms and pricing before saving.",
+        "AI features send subtitles and relevant context only to the selected AI service. Your key is saved locally in Chrome; translation and summaries use your API balance.",
       saveSettings: "Save settings",
       localRemix: "Local remix",
       customizationTitle: "Want to use another AI model?",
@@ -77,12 +83,18 @@ const YTD_OPTIONS = (() => {
     "zh-CN": {
       pageTitle: "YouTube Digest 设置",
       languageGroupLabel: "界面语言",
-      heading: "使用你自己的 API 密钥",
+      heading: "选择字幕来源与模型平台",
+      providerLabel: "模型平台", modelLabel: "模型 ID",
+      modelHelp: "填写所选平台的准确模型 ID，使用支持 JSON 输出的文字聊天模型。保存设置不会调用模型。",
+      aiKeyLabel: "模型 API Key（只读字幕可留空）", providerKeysLink: "打开该平台的 Key 管理页面",
+      transcriptModeLabel: "字幕获取方式", nativeOnly: "直接读取 YouTube 页面（无需 Key）",
+      nativeFallback: "优先 YouTube，失败后用 Supadata（消耗额度）", supadataOnly: "仅 Supadata（消耗额度）",
+      nativeHelp: "读取原生字幕，必要时打开 YouTube 的文字记录面板；不做语音转录。YouTube 改版或字幕缺失时可能失败。",
       lede:
-        "密钥仅保存在当前 Chrome 个人资料中，只会发送给 Supadata 和 DeepSeek。本开源扩展没有开发者服务器，也不使用分析服务。",
+        "本地改进版：YouTube 页面字幕无需 API Key。模型支持 OpenRouter、302.ai 和 DeepSeek；密钥仅保存在当前 Chrome 个人资料中。",
       transcriptProvider: "字幕服务",
-      supadataApiKeyLabel: "Supadata API 密钥",
-      supadataHelp: "用于获取带时间戳的 YouTube 字幕。",
+      supadataApiKeyLabel: "Supadata API Key（可选备用）",
+      supadataHelp: "仅在选择 Supadata 或自动备用模式时调用，消耗 Supadata 额度。",
       supadataLink: "创建 Supadata 账号并获取密钥",
       supadataHelpSuffix: "。Supadata 会在引导流程中生成密钥。",
       aiProvider: "AI 服务",
@@ -94,7 +106,7 @@ const YTD_OPTIONS = (() => {
       deepseekLink: "创建 DeepSeek API 密钥",
       deepseekHelpSuffix: "。",
       privacyNote:
-        "使用 AI 功能时，DeepSeek 会收到视频字幕及相关视频上下文。保存前请查看 DeepSeek 的服务条款和价格。",
+        "中文翻译、概览与解释会把字幕和相关上下文发送给你选定的模型平台，消耗该平台额度。Key 仅保存在 Chrome 本地；不同平台的 Key 分开保存。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -350,6 +362,23 @@ const YTD_OPTIONS = (() => {
     const form = doc.getElementById("settingsForm");
     const aiApiKeyInput = doc.getElementById("aiApiKey");
     const supadataApiKeyInput = doc.getElementById("supadataApiKey");
+    const providerInput = doc.getElementById("provider");
+    const aiModelInput = doc.getElementById("aiModel");
+    const transcriptProviderInput = doc.getElementById("transcriptProvider");
+    const profilesKey = "ytd_provider_profiles";
+    let profiles = {};
+    let previousProvider = settingsApi.DEFAULTS.provider;
+    const updateProviderLink = () => {
+      doc.getElementById("providerKeysLink").href = settingsApi.PROVIDERS[providerInput.value].keysUrl;
+    };
+    providerInput.addEventListener("change", () => {
+      profiles[previousProvider] = { aiApiKey: aiApiKeyInput.value, aiModel: aiModelInput.value };
+      previousProvider = providerInput.value;
+      const profile = profiles[previousProvider] || {};
+      aiApiKeyInput.value = profile.aiApiKey || "";
+      aiModelInput.value = profile.aiModel || settingsApi.PROVIDERS[previousProvider].model;
+      updateProviderLink();
+    });
     const customizationPrompt = doc.getElementById("customizationPrompt");
     const copyCustomizationPromptBtn = doc.getElementById(
       "copyCustomizationPromptBtn",
@@ -419,6 +448,13 @@ const YTD_OPTIONS = (() => {
           stored[settingsApi.STORAGE_KEY],
         );
         const settings = migration.settings;
+        const profileData = await storage.get(profilesKey);
+        profiles = profileData[profilesKey] || {};
+        providerInput.value = settings.provider;
+        previousProvider = settings.provider;
+        aiModelInput.value = settings.aiModel;
+        transcriptProviderInput.value = settings.transcriptProvider;
+        updateProviderLink();
 
         aiApiKeyInput.value = settings.aiApiKey;
         supadataApiKeyInput.value = settings.supadataApiKey;
@@ -445,21 +481,21 @@ const YTD_OPTIONS = (() => {
       setStatus(saveStatus, "saving");
 
       const settings = settingsApi.normalize({
+        provider: providerInput.value,
+        aiModel: aiModelInput.value,
+        transcriptProvider: transcriptProviderInput.value,
         aiApiKey: aiApiKeyInput.value,
         supadataApiKey: supadataApiKeyInput.value,
       });
 
-      if (!settings.supadataApiKey) {
+      if (settings.transcriptProvider !== "native" && !settings.supadataApiKey) {
         setStatus(saveStatus, "addSupadataKey");
-        return;
-      }
-      if (!settings.aiApiKey) {
-        setStatus(saveStatus, "addDeepseekKey");
         return;
       }
 
       try {
-        await storage.set({ [settingsApi.STORAGE_KEY]: settings });
+        profiles[settings.provider] = { aiApiKey: settings.aiApiKey, aiModel: settings.aiModel };
+        await storage.set({ [settingsApi.STORAGE_KEY]: settings, [profilesKey]: profiles });
         setStatus(saveStatus, "saved");
       } catch (_error) {
         setStatus(saveStatus, "saveFailed");

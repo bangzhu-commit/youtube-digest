@@ -46,6 +46,13 @@
       <form id="settingsForm">
         <section class="card">
           <h2 data-i18n="transcriptProvider">Transcript provider</h2>
+          <label for="transcriptProvider" data-i18n="transcriptModeLabel">Subtitle source</label>
+          <select id="transcriptProvider" name="transcriptProvider">
+            <option value="native" data-i18n="nativeOnly">YouTube page (no API key)</option>
+            <option value="native-fallback" data-i18n="nativeFallback">YouTube first, then Supadata (uses credits)</option>
+            <option value="supadata" data-i18n="supadataOnly">Supadata only (uses credits)</option>
+          </select>
+          <p class="help" data-i18n="nativeHelp">Read the current video's native captions or transcript. May open YouTube's transcript panel. No speech transcription is performed.</p>
           <label for="supadataApiKey" data-i18n="supadataApiKeyLabel"
             >Supadata API key</label
           >
@@ -75,46 +82,19 @@
 
         <section class="card">
           <h2 data-i18n="aiProvider">AI provider</h2>
-          <div
-            class="provider-summary"
-            aria-label="Supported AI provider"
-            data-i18n-aria-label="providerSummaryLabel"
-          >
-            <span class="provider-name">DeepSeek V4 Flash</span>
-            <span class="provider-badge" data-i18n="providerBadge"
-              >Supported in this version</span
-            >
-          </div>
-
-          <label for="aiApiKey" data-i18n="deepseekApiKeyLabel"
-            >DeepSeek API key</label
-          >
-          <input
-            id="aiApiKey"
-            name="aiApiKey"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="Paste your DeepSeek key"
-          />
-          <p class="help">
-            <span data-i18n="deepseekHelp"
-              >YouTube Digest uses DeepSeek V4 Flash for overviews,
-              explanations, translation, and note polishing.</span
-            >
-            <a
-              href="https://platform.deepseek.com/api_keys"
-              target="_blank"
-              rel="noreferrer"
-              data-i18n="deepseekLink"
-              >Create a DeepSeek API key</a
-            ><span data-i18n="deepseekHelpSuffix">.</span>
-          </p>
-          <div class="privacy-note" data-i18n="privacyNote">
-            When you use AI features, DeepSeek receives the video transcript
-            and relevant video context. Review DeepSeek's terms and pricing
-            before saving.
-          </div>
+          <label for="provider" data-i18n="providerLabel">AI service</label>
+          <select id="provider" name="provider">
+            <option value="openrouter">OpenRouter</option>
+            <option value="302ai">302.ai</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+          <label for="aiModel" data-i18n="modelLabel">Model ID</label>
+          <input id="aiModel" name="aiModel" type="text" autocomplete="off" spellcheck="false" required />
+          <p class="help" data-i18n="modelHelp">Enter the exact model ID from your provider. Select a chat model that supports JSON output.</p>
+          <label for="aiApiKey" data-i18n="aiKeyLabel">AI API key (optional for transcript reading)</label>
+          <input id="aiApiKey" name="aiApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your AI provider key" />
+          <p class="help"><a id="providerKeysLink" href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer" data-i18n="providerKeysLink">Open provider key settings</a></p>
+          <div class="privacy-note" data-i18n="privacyNote">AI features send subtitles and relevant context to the selected service. API keys remain in this Chrome profile.</div>
         </section>
 
         <div class="form-actions">
