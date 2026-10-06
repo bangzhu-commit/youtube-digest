@@ -6,7 +6,7 @@
 
 ## 本地改动
 
-- 默认直接读取当前 YouTube 页面的字幕，必要时打开 YouTube 自带文字记录面板，无需 Supadata Key。
+- 默认直接读取当前 YouTube 页面的字幕，无需 Supadata Key。借鉴 Obsidian Web Clipper 使用的 Defuddle 0.19.4，兼容新旧文字记录面板、JSON3/XML 字幕，并在原地址失效时向 YouTube 播放器接口请求新字幕地址；必要时打开自带文字记录面板。
 - Supadata 改为可选备用。可选“直接读取”“直接读取失败后用 Supadata”“仅 Supadata”。只有主动选择备用或 Supadata 模式才会消耗其额度。
 - 模型平台支持 OpenRouter（默认）、302.ai 和 DeepSeek，模型 ID 可编辑；不同平台的 Key 分开保存，切换时不混用。
 - 原文字幕无需模型 Key。中文翻译、概览、解释与润色才调用选定的模型平台。
@@ -26,7 +26,7 @@
 
 ## 支持范围与验收
 
-支持 Chrome 116+、带原生字幕的普通公开 `youtube.com/watch` 页面。YouTube 页面与字幕接口可能变化；直接获取失败时，先打开“显示文字记录”再重试，或选择 Supadata 备用。无字幕视频需要额外语音转录，本版没有实现。Shorts、直播和受限视频未验证。
+支持 Chrome 116+、带原生字幕的普通公开 `youtube.com/watch` 页面。播放器备用请求在当前 YouTube 页面的 MAIN world 同源执行，不新增代理或浏览器权限，不需要 Defuddle 云服务或 API Key。YouTube 页面与字幕接口仍可能变化；全部原生路径失败时可刷新重试，或选择 Supadata 备用。无字幕视频需要额外语音转录，本版没有实现。Shorts、直播和受限视频未验证。
 
 验证命令：`npm test`、`npm run check`、`npm run package`。测试通过只能说明本地逻辑通过；真实 Key、额度、视频页面仍要实测。安装后用真实视频检查字幕、时间戳跳转和双语翻译。
 

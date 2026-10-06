@@ -6,7 +6,7 @@ This fork extends [Zara Zhang's original project](https://github.com/zarazhangru
 
 ## Local changes
 
-- Native YouTube captions/transcript reading without a Supadata key. The extension may open the built-in transcript panel if the caption URL is unavailable.
+- Native YouTube captions/transcript reading without a Supadata key. Adapted from Defuddle 0.19.4, it supports old/new transcript panels, JSON3/XML captions and fresh caption URLs from YouTube's player API. It may open the built-in transcript panel as a fallback.
 - Supadata is optional. Select native only, native with Supadata fallback, or Supadata only. Fallback requests consume credits only when explicitly enabled.
 - OpenRouter (default), 302.ai and DeepSeek; exact model ID is editable. Provider keys are separated so switching cannot send a previous provider's key to another service.
 - Original transcripts can be read without an AI key. Translation, chapters, explanation and note cleanup require the selected provider's key and balance.
@@ -28,7 +28,7 @@ The default Reviewed mode adapts baoyu-translate: neighboring subtitle context a
 
 ## Limits and validation
 
-Chrome 116+, standard public `youtube.com/watch` pages with captions. YouTube page structures and caption endpoints can change; direct extraction is best-effort. If it fails, manually open Show transcript and retry, or select Supadata fallback. Videos without captions require separate speech transcription, which this version does not perform. Shorts, live and restricted videos are not verified.
+Chrome 116+, standard public `youtube.com/watch` pages with captions. Native reads run in the current YouTube page with same-origin requests; no extra proxy permissions, Defuddle service or cloud key is required. YouTube page structures and caption endpoints can change; direct extraction is best-effort. If it fails, refresh the video and retry, or select Supadata fallback. Videos without captions require separate speech transcription, which this version does not perform. Shorts, live and restricted videos are not verified.
 
 Run `npm test`, `npm run check`, `npm run package`. A passing test suite validates local logic, not your real API credentials or every YouTube video. Verify caption reading, time jumps and bilingual translation on a real video after installing.
 

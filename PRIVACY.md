@@ -1,6 +1,6 @@
 # Privacy: local modified version
 
-This copy has no developer server, analytics or telemetry. Native subtitle reading runs only on the YouTube video requested by the side panel, verifies its video ID, and uses YouTube's caption URLs or built-in transcript panel. It does not access other browsing content and receives no API credentials.
+This copy has no developer server, analytics or telemetry. Native subtitle reading runs only on the YouTube video requested by the side panel, verifies its video ID, and uses YouTube's same-origin caption URLs, player API or built-in transcript panel. Player requests contain that video ID and a client context; WEB requests use the current page's client version, locale and visitor data when available. The browser handles the current YouTube session normally; the extension does not extract cookies or send this context to another service. It does not access other browsing content and receives no API credentials.
 
 Supadata receives the canonical video URL and its own key only if the user selects a Supadata mode. Native-only mode never calls Supadata. Speech transcription is not performed.
 

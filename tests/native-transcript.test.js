@@ -32,7 +32,7 @@ test("current-video captions preserve timestamp and language without API keys", 
   assert.equal(result.transcript[0].duration, 2.2);
   assert.equal(result.language, "en");
   assert.equal(result.transcriptTextTimestamped, "[0:01] Hello world");
-  assert.ok(fetched.includes("fmt=json3"));
+  assert.equal(fetched, "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94");
 });
 
 test("empty caption responses fall back to the full built-in transcript", async () => {

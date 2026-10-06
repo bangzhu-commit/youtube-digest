@@ -17,7 +17,7 @@ test("manifest uses minimized install-time permissions", () => {
   assert.ok(!manifest.permissions.includes("activeTab"));
   assert.ok(manifest.host_permissions.includes("https://api.deepseek.com/*"));
   assert.equal(Object.hasOwn(manifest, "optional_host_permissions"), false);
-  assert.equal(manifest.version, "1.2.0");
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
 });
 
 test("local release documents providers, caption mode and credential boundaries", () => {
