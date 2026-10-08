@@ -6,4 +6,6 @@ Enter keys only in the extension Settings. Never include them in source, chat, l
 
 Use provider spending limits. Native-only mode cannot charge Supadata; automatic fallback is explicitly selected. Translation and AI overview use the selected provider's API balance. No account creation, purchase or cloud publication is performed by this copy.
 
-The release script checks syntax, tests, manifest references, package allowlist and potential secrets. This does not establish every provider's live behavior. Run npm test, npm run check, npm run package and test a real public captioned video after installation.
+The optional Obsidian host is registered for exactly one extension ID and one chosen vault. Its protocol accepts only episode-scoped loads and annotation saves, with bounded messages and no arbitrary paths or command execution. Symlinks outside the vault are rejected. Existing source text is never overwritten, repeated saves are deduplicated, and manually edited annotations cannot be silently replaced. Keep the private host configuration outside the repository. Reinstall the host if the source folder or extension ID changes.
+
+The release script checks syntax, tests, manifest references, package allowlist and potential secrets. This does not establish every provider's live behavior. Run npm test, npm run check, npm run package and test a real public captioned video and a Xiaoyuzhou episode after installation.

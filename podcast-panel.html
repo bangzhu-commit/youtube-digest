@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>小宇宙阅读与批注</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+  <link rel="stylesheet" href="podcast-panel.css" />
+</head>
+<body>
+  <header class="header podcast-header">
+    <div class="header-top">
+      <div class="video-info"><div class="video-title" id="podcastTitle">小宇宙阅读</div><div class="video-channel" id="podcastChannel"></div></div>
+      <button class="settings-btn" id="settingsBtn" type="button">设置</button>
+    </div>
+    <div class="podcast-toolbar">
+      <button class="enhance-btn" id="reloadBtn" type="button">读取素材库</button>
+      <label class="enhance-btn import-label">导入全文<input id="importFile" type="file" accept=".md,.txt,.srt,.vtt,.json" /></label>
+      <button class="enhance-btn" id="archiveBtn" type="button" disabled>保存到 Obsidian</button>
+      <button class="enhance-btn" id="exportBtn" type="button" disabled>导出 Markdown</button>
+    </div>
+    <p class="podcast-status" id="status" role="status" aria-live="polite">正在识别当前节目…</p>
+    <div class="tabs">
+      <button class="tab active" data-view="transcript" type="button">全文</button>
+      <button class="tab" data-view="overview" type="button">概览</button>
+      <button class="tab" data-view="annotations" type="button">我的批注 <span id="annotationCount">0</span></button>
+    </div>
+  </header>
+  <main class="content" id="podcastContent">
+    <section data-podcast-view="transcript">
+      <p id="emptyState" class="podcast-empty">打开小宇宙单集页后，可读取素材库中的全文，或导入 Markdown、TXT、SRT、VTT、JSON 文稿。节目简介不会作为全文。</p>
+      <div class="podcast-search"><input id="searchInput" type="search" placeholder="搜索全文" aria-label="搜索全文" /><output id="searchCount" aria-live="polite"></output></div>
+      <div id="transcriptList"></div>
+    </section>
+    <section data-podcast-view="overview" hidden>
+      <p class="podcast-empty">概览由 AI 根据全文生成，可能有误；引用请核对原文。生成时使用设置中选择的 AI 服务。</p>
+      <button class="enhance-btn" id="analyzeBtn" type="button" disabled>生成概览</button>
+      <div id="overview"></div>
+    </section>
+    <section data-podcast-view="annotations" hidden><div id="annotationsList"></div></section>
+  </main>
+  <aside id="annotationEditor" class="podcast-editor" hidden aria-label="原句批注">
+    <div class="section-header"><strong>写下感想</strong><button class="enhance-btn" id="cancelAnnotationBtn" type="button">取消</button></div>
+    <blockquote id="selectedQuote"></blockquote>
+    <textarea id="thoughtInput" rows="4" placeholder="我想到的是…" aria-label="我的感想"></textarea>
+    <div class="podcast-editor-actions"><button class="enhance-btn" id="explainBtn" type="button">解释原句</button><button class="enhance-btn primary" id="saveAnnotationBtn" type="button">保存批注草稿</button></div>
+    <p id="editorStatus" role="status"></p>
+    <div id="explanation" hidden><strong>AI 解释</strong><p id="explanationText"></p></div>
+  </aside>
+  <script src="media-platform.js"></script>
+  <script src="podcast-core.js"></script>
+  <script src="podcast-panel.js"></script>
+</body>
+</html>

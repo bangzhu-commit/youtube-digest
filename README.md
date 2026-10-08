@@ -11,6 +11,23 @@ This fork extends [Zara Zhang's original project](https://github.com/zarazhangru
 - OpenRouter (default), 302.ai and DeepSeek; exact model ID is editable. Provider keys are separated so switching cannot send a previous provider's key to another service.
 - Original transcripts can be read without an AI key. Translation, chapters, explanation and note cleanup require the selected provider's key and balance.
 - The original side panel, timestamp jumps, bilingual alignment, search and local cache remain.
+- Xiaoyuzhou episode pages have a Chinese reading panel with existing transcripts, search, timestamp playback, exact-quote annotations, draft recovery and Obsidian archival.
+
+## Xiaoyuzhou and Obsidian
+
+Click the extension icon on a Xiaoyuzhou episode page. The reader first loads an existing Markdown source from `知识库/原始素材库` in your vault, matched by the episode URL and an explicit transcript heading. You can also import Markdown, TXT, SRT, VTT or segment JSON. Public page text is accepted only when it contains an explicit transcript; shownotes and media references are not transcripts. This version does not transcribe audio automatically. Reading and annotations need no AI key; overview and explanation are sent to the configured provider only when you click their buttons.
+
+Select an exact quote or click its paragraph annotation button and save your thought as a browser draft. Drafts are keyed by episode and survive panel closure. **Save to Obsidian** writes `知识库/阅读工作台/小宇宙-EPISODE_ID-阅读批注.md`, embedding the original source and appending the quote, timestamp and your unchanged thought. Existing sources are never overwritten, repeated saves are idempotent, and manual edits to archived annotations are respected. Conflicts require reloading the vault. Imported source text is also preserved in an original-text attachment. Without the local bridge, import, drafts and Markdown export still work.
+
+Direct vault reads and saves require Python 3 and a local Native Messaging host. On macOS, copy the extension ID from its details in `chrome://extensions` and run once from this source folder:
+
+```sh
+python3 native/install_host.py --extension-id YOUR_EXTENSION_ID --vault "/path/to/your/vault"
+```
+
+Only that extension ID and vault are registered. The host exposes episode-scoped source reads and annotation writes, with no arbitrary file API, network requests or command execution. Private configuration stays in the user's Application Support directory and is excluded from the repository and ZIP. Keep this source folder. Other systems require explicit `--config-dir` and `--host-dir` and have not been browser-tested.
+
+Reload the extension after upgrading, then refresh Xiaoyuzhou so the page script is available. New permissions cover Xiaoyuzhou episode pages and `nativeMessaging` for this local connection. Timestamp playback uses the current page's audio player; start playback on the episode page first if the player is not ready.
 
 ## Install and configure
 

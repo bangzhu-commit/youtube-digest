@@ -30,6 +30,7 @@ test("local release documents providers, caption mode and credential boundaries"
   assert.deepEqual(manifest.host_permissions.sort(), [
     "https://www.youtube.com/*", "https://api.supadata.ai/*", "https://api.deepseek.com/*",
     "https://openrouter.ai/*", "https://api.302.ai/*",
+    "https://www.xiaoyuzhoufm.com/episode/*", "https://xiaoyuzhoufm.com/episode/*",
   ].sort());
   assert.ok(!manifest.host_permissions.includes("<all_urls>"));
 });
@@ -41,6 +42,9 @@ test("product UI contains no emoji or emoji-like pictographs", () => {
     read("content.js"),
     read("options.html"),
     read("options.js"),
+    read("podcast-panel.html"),
+    read("podcast-panel.js"),
+    read("podcast-content.js"),
   ].join("\n");
 
   assert.doesNotMatch(

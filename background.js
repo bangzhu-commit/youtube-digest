@@ -15,6 +15,7 @@
 // chrome.storage.local and are never part of the extension source.
 importScripts("settings.js");
 importScripts("native-transcript.js");
+importScripts("media-platform.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
@@ -226,7 +227,8 @@ async function readBoundedAiResponse(response, onActivity) {
  * Chrome's Side Panel API lets us show a persistent panel alongside the page.
  */
 chrome.action.onClicked.addListener((tab) => {
-  if (!(tab.url || "").startsWith("https://www.youtube.com")) {
+  const media = YTD_MEDIA.identify(tab.url);
+  if (!media) {
     void updatePanelForTab(tab.id, tab.url, tab.windowId);
     return;
   }
@@ -234,7 +236,7 @@ chrome.action.onClicked.addListener((tab) => {
   // Re-enable + open without awaiting — preserves user gesture context
   chrome.sidePanel.setOptions({
     tabId: tab.id,
-    path: "sidepanel.html",
+    path: media.panel,
     enabled: true,
   });
   chrome.sidePanel.open({ tabId: tab.id });
@@ -284,8 +286,8 @@ async function closePanelForTab(tabId, windowId) {
 }
 
 async function updatePanelForTab(tabId, url, windowId) {
-  const isYouTube = (url || "").startsWith("https://www.youtube.com");
-  if (!isYouTube) {
+  const media = YTD_MEDIA.identify(url);
+  if (!media) {
     // Close the visible instance first. Then disable this tab so Chrome cannot
     // reopen the global default panel as navigation settles.
     await closePanelForTab(tabId, windowId);
@@ -295,7 +297,7 @@ async function updatePanelForTab(tabId, url, windowId) {
 
   // setOptions can reject if the tab just closed. Ignore that harmlessly.
   await chrome.sidePanel
-    .setOptions({ tabId, path: "sidepanel.html", enabled: true })
+    .setOptions({ tabId, path: media.panel, enabled: true })
     .catch(() => {});
 }
 
@@ -340,6 +342,24 @@ chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
  * This is like a switchboard — different "actions" trigger different handlers.
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "podcastNative") {
+    // Content scripts/websites must never invoke the local file bridge.
+    if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("podcast-panel.html")) {
+      sendResponse({ success: false, error: "本机素材库仅允许插件阅读页访问。" });
+      return false;
+    }
+    const request = message.request;
+    if (!request || !["load", "save"].includes(request.action) ||
+        !/^[a-f0-9]{24}$/.test(request.episodeId || "") ||
+        new TextEncoder().encode(JSON.stringify(request)).length > 900000) {
+      sendResponse({ success: false, error: "本机请求格式无效或文稿过大。" });
+      return false;
+    }
+    chrome.runtime.sendNativeMessage("com.youtube_digest.obsidian", request)
+      .then(sendResponse)
+      .catch(() => sendResponse({ success: false, error: "尚未连接本机素材库。请按安装说明配置 Obsidian 连接。" }));
+    return true;
+  }
   // We need to return true to indicate we'll respond asynchronously
   if (message.action === "fetchTranscript") {
     handleFetchTranscript(message.videoId, message.tabId)

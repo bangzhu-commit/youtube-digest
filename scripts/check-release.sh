@@ -29,6 +29,14 @@ public_allowlist=(
   "background.js"
   "settings.js"
   "native-transcript.js"
+  "media-platform.js"
+  "podcast-core.js"
+  "podcast-content.js"
+  "podcast-panel.html"
+  "podcast-panel.css"
+  "podcast-panel.js"
+  "native/podcast_host.py"
+  "native/install_host.py"
   "content.js"
   "sidepanel.html"
   "sidepanel.css"
@@ -52,6 +60,14 @@ public_allowlist=(
 )
 
 required_public_files=(
+  "media-platform.js"
+  "podcast-core.js"
+  "podcast-content.js"
+  "podcast-panel.html"
+  "podcast-panel.css"
+  "podcast-panel.js"
+  "native/podcast_host.py"
+  "native/install_host.py"
   "manifest.json"
   "background.js"
   "settings.js"
@@ -93,6 +109,7 @@ for forbidden in "config.js" ".DS_Store" ".git"; do
 done
 
 command -v node >/dev/null 2>&1 || fail "Node.js is required"
+command -v python3 >/dev/null 2>&1 || fail "Python 3 is required for the Obsidian bridge"
 
 credential_scan_files=("${release_files[@]}")
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -234,6 +251,8 @@ if compgen -G "tests/*.test.js" >/dev/null; then
   node --test tests/*.test.js
 fi
 
+python3 -m unittest discover -s tests -p 'test_podcast_host.py'
+
 if ((${#javascript_files[@]} > 0)); then
   if grep -En \
     'importScripts[[:space:]]*\([[:space:]]*["'\'']config\.js|(^|[^[:alnum:]_])CONFIG\.' \
@@ -262,7 +281,7 @@ const patterns = [
 
 let found = false;
 for (const file of process.argv.slice(2)) {
-  if (!/\.(?:js|json|html|css|md|txt|yml|yaml|sh)$/i.test(file) && file !== "LICENSE") {
+  if (!/\.(?:js|json|html|css|md|txt|yml|yaml|sh|py)$/i.test(file) && file !== "LICENSE") {
     continue;
   }
   const text = fs.readFileSync(file, "utf8");

@@ -98,6 +98,7 @@ function loadBackgroundHelpers({
     setTimeout: setTimeoutImpl,
     clearTimeout: clearTimeoutImpl,
     importScripts() {},
+    YTD_MEDIA: require("../media-platform.js"),
     chrome: {
       storage: {
         local: {
