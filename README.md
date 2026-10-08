@@ -15,9 +15,15 @@ This fork extends [Zara Zhang's original project](https://github.com/zarazhangru
 
 ## Xiaoyuzhou and Obsidian
 
-Click the extension icon on a Xiaoyuzhou episode page. The reader first loads an existing Markdown source from `知识库/原始素材库` in your vault, matched by the episode URL and an explicit transcript heading. You can also import Markdown, TXT, SRT, VTT or segment JSON. Public page text is accepted only when it contains an explicit transcript; shownotes and media references are not transcripts. This version does not transcribe audio automatically. Reading and annotations need no AI key; overview and explanation are sent to the configured provider only when you click their buttons.
+Click the extension icon on a Xiaoyuzhou episode page. The reader loads an existing Markdown source from `知识库/原始素材库`, matched by episode URL and an explicit transcript heading. You can also import Markdown, TXT, SRT, VTT or segment JSON. Shownotes and media references are not transcripts. Reading and annotations need no AI key; model processing runs only on request.
+
+Preview opening paragraphs whose timestamps start within the first five minutes (long paragraphs may extend past that window), then continue polishing the full transcript. Every batch has separate drafting and source comparison calls to the configured text model. Empty fillers are removed while content, numbers, attribution and uncertainty are preserved; uncertain words remain flagged. Completed batches are cached for resumption, pending rows remain labeled as source text, and the original is available for comparison. Text polishing is not audio verification.
+
+For difficult passages, **听音复核** runs cached faster-whisper medium locally, sends at most ninety seconds of MP3 to a selected Gemini audio model via OpenRouter, then reviews it with the configured text model. The audio must already exist at `知识库/原始素材库/_attachments/xiaoyuzhou/EPISODE_ID/source.mp3`. FFmpeg and faster-whisper must already be installed and the model cached; nothing is downloaded or installed automatically. Rerun the installer to record FFmpeg. This requires an OpenRouter key and uses provider credits without changing the text-model setting. Local and cloud candidates, actual audio coverage and correction issues are preserved.
 
 Select an exact quote or click its paragraph annotation button and save your thought as a browser draft. Drafts are keyed by episode and survive panel closure. **Save to Obsidian** writes `知识库/阅读工作台/小宇宙-EPISODE_ID-阅读批注.md`, embedding the original source and appending the quote, timestamp and your unchanged thought. Existing sources are never overwritten, repeated saves are idempotent, and manual edits to archived annotations are respected. Conflicts require reloading the vault. Imported source text is also preserved in an original-text attachment. Without the local bridge, import, drafts and Markdown export still work.
+
+Polished selections retain both the reading quote and source passage. The derivative is saved separately as `知识库/阅读工作台/小宇宙-EPISODE_ID-精校阅读版.md`; alignment and audio candidates are stored in `_attachments/xiaoyuzhou/EPISODE_ID/reading-v1.json` under that workspace. Changed sources invalidate cached polishing. Manually edited derivatives are not silently replaced.
 
 Direct vault reads and saves require Python 3 and a local Native Messaging host. On macOS, copy the extension ID from its details in `chrome://extensions` and run once from this source folder:
 
@@ -25,9 +31,9 @@ Direct vault reads and saves require Python 3 and a local Native Messaging host.
 python3 native/install_host.py --extension-id YOUR_EXTENSION_ID --vault "/path/to/your/vault"
 ```
 
-Only that extension ID and vault are registered. The host exposes episode-scoped source reads and annotation writes, with no arbitrary file API, network requests or command execution. Private configuration stays in the user's Application Support directory and is excluded from the repository and ZIP. Keep this source folder. Other systems require explicit `--config-dir` and `--host-dir` and have not been browser-tested.
+Only that extension ID, vault and installed FFmpeg path are registered. The host exposes scoped reads, saves and audio clips, with no arbitrary file, command or network API. Audio processing executes fixed FFmpeg arguments and the bundled local Whisper worker with local-only model loading. Private configuration stays in Application Support outside the repository and ZIP. Keep this source folder. Other systems require explicit `--config-dir` and `--host-dir` and have not been browser-tested.
 
-Reload the extension after upgrading, then refresh Xiaoyuzhou so the page script is available. New permissions cover Xiaoyuzhou episode pages and `nativeMessaging` for this local connection. Timestamp playback uses the current page's audio player; start playback on the episode page first if the player is not ready.
+Reload the extension after upgrading, then refresh Xiaoyuzhou. Version 1.4.0 retains the permissions of 1.3.0. Timestamp playback uses the current page's audio player; start playback on the episode page first if needed.
 
 ## Install and configure
 

@@ -36,7 +36,7 @@ Translation principles, terminology and review workflow adapted from baoyu-trans
 
 Source: https://github.com/JimLiu/baoyu-skills/tree/main/skills/baoyu-translate
 
-The extension implements a compact, two-call subtitle workflow. It does not execute the local Skill or copy personal configuration files into the package.
+The extension implements a compact, two-call subtitle workflow and adapts its filler-removal and source-review principles for Chinese podcast reading. It does not execute the local Skill or copy personal configuration files into the package.
 
 MIT License
 

@@ -31,12 +31,14 @@ public_allowlist=(
   "native-transcript.js"
   "media-platform.js"
   "podcast-core.js"
+  "podcast-reading.js"
   "podcast-content.js"
   "podcast-panel.html"
   "podcast-panel.css"
   "podcast-panel.js"
   "native/podcast_host.py"
   "native/install_host.py"
+  "native/local_whisper.py"
   "content.js"
   "sidepanel.html"
   "sidepanel.css"
@@ -51,6 +53,7 @@ public_allowlist=(
   "prompts/explain.md"
   "prompts/note-cleanup.md"
   "prompts/translation.md"
+  "prompts/podcast-reading.md"
   "README.md"
   "README.zh-CN.md"
   "PRIVACY.md"
@@ -60,6 +63,9 @@ public_allowlist=(
 )
 
 required_public_files=(
+  "podcast-reading.js"
+  "prompts/podcast-reading.md"
+  "native/local_whisper.py"
   "media-platform.js"
   "podcast-core.js"
   "podcast-content.js"

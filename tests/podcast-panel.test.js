@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { randomUUID } = require('node:crypto');
+const { randomUUID, webcrypto } = require('node:crypto');
 const media = require('../media-platform.js');
 const core = require('../podcast-core.js');
 const A = 'a'.repeat(24), B = 'b'.repeat(24);
@@ -19,17 +19,17 @@ class Element {
   focus() {}
 }
 
-function panel({ cache = {}, load = async id => loaded(id), write = async () => {} } = {}) {
+function panel({ cache = {}, load = async id => loaded(id), write = async () => {}, request = async () => ({}) } = {}) {
   const elements = new Map(), windowListeners = {};
   const element = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   element('annotationEditor').hidden = true;
   const sandbox = {
-    console, URL, Blob, crypto: { randomUUID }, setTimeout: () => 0, clearTimeout() {}, YTD_MEDIA: media, YTD_PODCAST: core,
+    console, URL, Blob, TextEncoder, crypto: { randomUUID, subtle: webcrypto.subtle }, setTimeout: () => 0, clearTimeout() {}, YTD_MEDIA: media, YTD_PODCAST: core, YTD_READING: require('../podcast-reading.js'),
     document: { getElementById: element, querySelectorAll: () => [], createElement: () => new Element(), createTextNode: text => ({ textContent: text }) },
     window: { addEventListener: (name, fn) => windowListeners[name] = fn, close() {} },
     chrome: {
       storage: { local: { get: async key => structuredClone({ [key]: cache[key] }), set: async values => { await write(values); Object.assign(cache, structuredClone(values)); } } },
-      runtime: { sendMessage: async message => message.action === 'podcastNative' ? load(message.request.episodeId) : {} },
+      runtime: { sendMessage: async message => message.action === 'podcastNative' ? load(message.request.episodeId) : request(message) },
       tabs: { query: () => new Promise(() => {}), sendMessage: async () => ({}), onActivated: { addListener() {} }, onUpdated: { addListener() {} } },
     },
   };
@@ -100,4 +100,46 @@ test('the file bridge rejects website/content-script senders and invalid request
   assert.equal((await invoke({ ...message, request: { action: 'delete', episodeId: A } }, trusted)).success, false);
   assert.equal(nativeCalls, 0);
   assert.equal((await invoke(message, trusted)).success, true); assert.equal(nativeCalls, 1);
+});
+
+test('partial reading survives failure and resumes without sending personal thoughts to the model', async () => {
+  const response = loaded(A);
+  response.raw = '## 转写全文\n\n[0:02] 嗯，可能第一段。\n\n[0:03] 第二段。\n\n[0:04] 第三段。\n\n[0:05] 第四段。';
+  const requests = []; let fail = true;
+  const p = panel({ load: async () => response, request: async message => {
+    requests.push(message);
+    if (message.segments.some(entry => entry.id === 'p-3') && fail) return { success: false, error: '模拟中断' };
+    return { success: true, segments: message.segments.map(entry => ({ ...entry, text: entry.text.replace('嗯，', ''), issues: [] })), provider: 'openrouter', model: 'test-model' };
+  } });
+  await p.sandbox.initialize(tab(A)); p.element('refineScope').value = 'all';
+  p.sandbox.openEditor('嗯，可能第一段。', 2, 'p-0'); p.element('thoughtInput').value = '私人感想，不能送精校'; await p.sandbox.saveAnnotation();
+  await p.sandbox.refine();
+  assert.equal(p.cache[`podcast_digest_${A}`].reading.items.length, 3);
+  assert.match(p.element('status').textContent, /模拟中断/);
+  fail = false; await p.sandbox.refine();
+  assert.equal(p.cache[`podcast_digest_${A}`].reading.items.length, 4);
+  assert.deepEqual(requests.at(-1).segments.map(entry => entry.id), ['p-3']);
+  assert.equal(JSON.stringify(requests).includes('私人感想'), false);
+});
+
+test('a late reading response from the previous episode cannot overwrite the new one', async () => {
+  let release, entered;
+  const waiting = new Promise(resolve => entered = resolve);
+  const p = panel({ request: message => new Promise(resolve => { release = () => resolve({ success: true, segments: message.segments.map(entry => ({ ...entry, issues: [] })) }); entered(); }) });
+  await p.sandbox.initialize(tab(A)); p.element('refineScope').value = 'all';
+  const old = p.sandbox.refine(); await waiting;
+  await p.sandbox.initialize(tab(B)); release(); await old;
+  assert.equal(p.cache[`podcast_digest_${B}`].reading, null);
+  assert.equal(p.element('podcastTitle').textContent, B);
+});
+
+test('a reading quote is linked to the original segment and survives closure unchanged', async () => {
+  const p = panel(); await p.sandbox.initialize(tab(A));
+  p.sandbox.openEditor(A + '原话', 2, 'p-0', '整理后的摘句');
+  p.element('thoughtInput').value = '  我的感想\n原样保存'; await p.sandbox.saveAnnotation();
+  const note = p.cache[`podcast_digest_${A}`].annotations[0];
+  assert.equal(note.quote, A + '原话'); assert.equal(note.readingQuote, '整理后的摘句');
+  assert.equal(note.thought, '  我的感想\n原样保存'); assert.equal(note.entryId, 'p-0');
+  const restored = panel({ cache: p.cache }); await restored.sandbox.initialize(tab(A));
+  assert.equal(restored.cache[`podcast_digest_${A}`].annotations[0].readingQuote, '整理后的摘句');
 });

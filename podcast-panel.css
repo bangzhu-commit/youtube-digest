@@ -1,4 +1,14 @@
 .podcast-header { gap: 10px; }
+.reading-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.reading-toolbar label, .audio-settings { font-size: 12px; color: var(--text-secondary); }
+.reading-toolbar select, .audio-settings select { max-width: 100%; padding: 6px; border: 1px solid var(--border-heavy); border-radius: 5px; background: var(--surface); color: var(--text); }
+.audio-settings { margin: 0 0 14px; line-height: 1.7; }
+.audio-settings summary { cursor: pointer; }
+.reading-badge { color: var(--text-secondary); font-size: 11px; margin: 6px 0; }
+.reading-issues { font-size: 12px; color: #95472f; white-space: pre-wrap; margin-top: 8px; }
+.source-compare { font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+.source-compare summary { cursor: pointer; }
+.podcast-row-header { flex-wrap: wrap; }
 .podcast-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
 .podcast-status { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .podcast-status[data-error="true"] { color: #95472f; }

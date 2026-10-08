@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import sys
 
 def main():
@@ -28,7 +29,7 @@ def main():
     hosts.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
     config = state / 'obsidian.json'
-    config.write_text(json.dumps({'vault': str(vault)}, ensure_ascii=False), encoding='utf-8')
+    config.write_text(json.dumps({'vault': str(vault), 'ffmpeg': shutil.which('ffmpeg')}, ensure_ascii=False), encoding='utf-8')
     config.chmod(0o600)
     launcher = state / 'podcast-host'
     script = Path(__file__).with_name('podcast_host.py').resolve()

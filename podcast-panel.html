@@ -28,6 +28,14 @@
   </header>
   <main class="content" id="podcastContent">
     <section data-podcast-view="transcript">
+      <div class="reading-toolbar">
+        <label>显示 <select id="readMode" aria-label="原稿或阅读版"><option value="reading">精校阅读版</option><option value="source">原始转写</option></select></label>
+        <label><select id="refineScope" aria-label="精校范围"><option value="preview">开头试读</option><option value="all">继续精校全文</option></select></label>
+        <button class="enhance-btn" id="refineBtn" type="button" disabled>生成阅读版</button>
+        <button class="enhance-btn" id="stopRefineBtn" type="button" hidden>本批完成后停止</button>
+      </div>
+      <p id="readingStatus" class="podcast-status" aria-live="polite"></p>
+      <details class="audio-settings"><summary>疑难段落听音复核</summary><p>需设置 OpenRouter，使用已配置的 API Key。点击段落旁的“听音复核”会先用本地 Whisper 转写，再把最多 90 秒音频交给云端模型，按服务价格计费。音频须已保存为该集本地 source.mp3。</p><label>音频模型 <select id="audioModel"><option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option><option value="google/gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite Preview</option></select></label></details>
       <p id="emptyState" class="podcast-empty">打开小宇宙单集页后，可读取素材库中的全文，或导入 Markdown、TXT、SRT、VTT、JSON 文稿。节目简介不会作为全文。</p>
       <div class="podcast-search"><input id="searchInput" type="search" placeholder="搜索全文" aria-label="搜索全文" /><output id="searchCount" aria-live="polite"></output></div>
       <div id="transcriptList"></div>
@@ -49,6 +57,7 @@
   </aside>
   <script src="media-platform.js"></script>
   <script src="podcast-core.js"></script>
+  <script src="podcast-reading.js"></script>
   <script src="podcast-panel.js"></script>
 </body>
 </html>

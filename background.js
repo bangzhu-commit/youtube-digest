@@ -16,6 +16,7 @@
 importScripts("settings.js");
 importScripts("native-transcript.js");
 importScripts("media-platform.js");
+importScripts("podcast-reading.js");
 
 const DEBUG = false;
 const AI_PROVIDER_IDLE_TIMEOUT_MS = 50_000;
@@ -79,8 +80,11 @@ async function requestAiCompletion({
   maxTokens,
   temperature,
   responseFormat,
+  modelOverride,
+  expectedSettings,
 }) {
   const settings = await getSettings();
+  if (expectedSettings && ["provider", "aiModel", "aiApiKey"].some(key => settings[key] !== expectedSettings[key])) throw new Error("模型设置已更改，请重新精校当前批次。");
   if (!settings.aiApiKey) {
     const error = new Error(
       "AI provider API key not configured. Open YouTube Digest Settings.",
@@ -89,6 +93,11 @@ async function requestAiCompletion({
     throw error;
   }
   const body = YTD_SETTINGS.completionBody(settings, { messages, maxTokens, temperature, responseFormat });
+  if (modelOverride) {
+    if (settings.provider !== "openrouter" || !YTD_READING.AUDIO_MODELS.includes(modelOverride)) throw new Error("云端听音需在设置中选择 OpenRouter；文字精校仍使用当前模型。");
+    body.model = modelOverride;
+    body.reasoning = { enabled: false };
+  }
 
   const controller = new AbortController();
   let timeoutKind = "";
@@ -342,6 +351,13 @@ chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
  * This is like a switchboard — different "actions" trigger different handlers.
  */
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (["podcastRefine", "podcastListen"].includes(message.action)) {
+    if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("podcast-panel.html")) {
+      sendResponse({ success: false, error: "精校与听音仅允许插件阅读页发起。" }); return false;
+    }
+    handlePodcastReading(message).then(sendResponse).catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
   if (message.action === "podcastNative") {
     // Content scripts/websites must never invoke the local file bridge.
     if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL("podcast-panel.html")) {
@@ -349,7 +365,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     const request = message.request;
-    if (!request || !["load", "save"].includes(request.action) ||
+    if (!request || !["load", "save", "audioClip"].includes(request.action) ||
         !/^[a-f0-9]{24}$/.test(request.episodeId || "") ||
         new TextEncoder().encode(JSON.stringify(request)).length > 900000) {
       sendResponse({ success: false, error: "本机请求格式无效或文稿过大。" });
@@ -1799,6 +1815,47 @@ async function callAiTranslation(
   }
 }
 
+async function handlePodcastReading(message) {
+  const segments = YTD_READING.validateSources(message.segments);
+  const context = validateTranslationContext(message.context);
+  const videoTitle = typeof message.title === "string" ? message.title.slice(0, 500) : "";
+  const terminology = typeof message.terminology === "string" ? message.terminology.slice(0, 3000) : "";
+  const settings = await getSettings();
+  if (!settings.aiApiKey) throw new Error("请先在设置中填写模型 API Key。");
+  const options = { temperature: 0.1, maxTokens: 8192, responseFormat: { type: "json_object" } };
+  const complete = async (heading, content, extra = {}) => {
+    const prompt = await loadPromptSection("podcast-reading.md", heading);
+    const result = await requestAiCompletion({ ...options, ...extra, expectedSettings: settings, messages: [{ role: "system", content: prompt }, { role: "user", content }] });
+    return parseLooseJson(result.text);
+  };
+  let draft, evidence;
+  if (message.action === "podcastListen") {
+    if (settings.provider !== "openrouter" || !YTD_READING.AUDIO_MODELS.includes(message.audioModel)) throw new Error("云端听音需在设置中选择 OpenRouter，并选用支持音频的模型。");
+    const clip = message.clip;
+    if (!/^[a-f0-9]{24}$/.test(message.episodeId || "") || !clip || !Number.isFinite(clip.start) || !Number.isFinite(clip.end) || clip.start < 0 || clip.end <= clip.start || clip.end - clip.start > 90 || clip.end > 604800) throw new Error("听音窗口无效，单次最多 90 秒。");
+    const local = await chrome.runtime.sendNativeMessage("com.youtube_digest.obsidian", { action: "audioClip", episodeId: message.episodeId, ...clip });
+    if (!local?.success) throw new Error(local?.error || "本地转写未完成。");
+    if (typeof local.audio !== "string" || local.audio.length > 700000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(local.audio) || typeof local.localText !== "string" || !local.localText.trim() || local.localText.length > 30000 || !Number.isFinite(local.start) || !Number.isFinite(local.end) || local.start !== clip.start || local.end > clip.end || local.end <= local.start) throw new Error("本机音频或识别结果格式无效。");
+    const actualClip = { start: local.start, end: local.end };
+    const result = await complete("Listen", [
+      { type: "text", text: JSON.stringify({ segments, context, videoTitle, terminology, clip: actualClip, localCandidate: local.localText }) },
+      { type: "input_audio", input_audio: { data: local.audio, format: "mp3" } },
+    ], { modelOverride: message.audioModel });
+    if (typeof result?.heardText !== "string" || !result.heardText.trim() || result.heardText.length > 30000) throw new Error("云端未返回实际音频识别候选，未标记为听音完成。");
+    draft = YTD_READING.align(result, segments, true);
+    evidence = { ...actualClip, localText: local.localText, heardText: result.heardText, localModel: local.localModel, audioModel: message.audioModel, provider: "openrouter", checkedAt: new Date().toISOString() };
+  } else {
+    draft = YTD_READING.align(await complete("Draft", JSON.stringify({ segments, context, videoTitle, terminology })), segments);
+  }
+  const reviewed = await complete("Review", JSON.stringify({ source: { segments, context, videoTitle, terminology }, draft: { segments: draft }, ...(evidence ? { audioEvidence: evidence } : {}) }));
+  const aligned = YTD_READING.align(reviewed, segments, !!evidence);
+  for (const entry of aligned) {
+    const source = segments.find(item => item.id === entry.id);
+    if (evidence && JSON.stringify(YTD_READING.numbers(source.text)) !== JSON.stringify(YTD_READING.numbers(entry.text)) && !entry.issues.length) throw new Error("听音修正了数字却没有留下记录，未采用该结果。");
+  }
+  return { success: true, segments: aligned, ...(evidence ? { evidence } : {}), provider: settings.provider, model: settings.aiModel };
+}
+
 // Pure validators are exposed for the repository's Node tests only.
 globalThis.__YTD_TRANSLATION_TESTING__ = {
   validateTranslationContext,
@@ -1811,4 +1868,5 @@ globalThis.__YTD_TRANSLATION_TESTING__ = {
   handleTranslateContent,
   closePanelForTab,
   updatePanelForTab,
+  handlePodcastReading,
 };

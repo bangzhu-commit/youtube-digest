@@ -80,11 +80,21 @@
     if (quote.length > 20000 || thought.length > 20000) throw new Error("单条批注过长。");
     const start = input.start === null ? null : Number(input.start);
     if (start !== null && (!Number.isFinite(start) || start < 0)) throw new Error("批注时间戳无效。");
-    return { id, quote, thought, start, createdAt: String(input.createdAt || new Date().toISOString()) };
+    const result = { id, quote, thought, start, createdAt: String(input.createdAt || new Date().toISOString()) };
+    if (input.entryId !== undefined) {
+      if (typeof input.entryId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(input.entryId)) throw new Error("批注段落编号无效。");
+      result.entryId = input.entryId;
+    }
+    if (input.readingQuote !== undefined) {
+      if (typeof input.readingQuote !== "string" || !input.readingQuote.trim() || input.readingQuote.length > 20000) throw new Error("阅读版摘句无效。");
+      result.readingQuote = input.readingQuote;
+    }
+    return result;
   }
   function markdownAnnotation(note) {
     const value = annotation(note);
-    return `### ${stamp(value.start)}\n\n**原文**\n\n${value.quote.split("\n").map(line => `> ${line}`).join("\n")}\n\n**我的感想**\n\n${value.thought}\n`;
+    const reading = value.readingQuote ? `**阅读版摘句**\n\n${value.readingQuote.split("\n").map(line => `> ${line}`).join("\n")}\n\n` : "";
+    return `### ${stamp(value.start)}\n\n${reading}**原文**\n\n${value.quote.split("\n").map(line => `> ${line}`).join("\n")}\n\n**我的感想**\n\n${value.thought}\n`;
   }
   function publicEpisode(data, id) {
     const stack = [data]; let inspected = 0;
