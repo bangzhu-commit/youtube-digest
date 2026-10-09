@@ -1833,12 +1833,12 @@ async function handlePodcastReading(message) {
     if (settings.provider !== "openrouter" || !YTD_READING.AUDIO_MODELS.includes(message.audioModel)) throw new Error("云端听音需在设置中选择 OpenRouter，并选用支持音频的模型。");
     const clip = message.clip;
     if (!/^[a-f0-9]{24}$/.test(message.episodeId || "") || !clip || !Number.isFinite(clip.start) || !Number.isFinite(clip.end) || clip.start < 0 || clip.end <= clip.start || clip.end - clip.start > 90 || clip.end > 604800) throw new Error("听音窗口无效，单次最多 90 秒。");
-    const local = await chrome.runtime.sendNativeMessage("com.youtube_digest.obsidian", { action: "audioClip", episodeId: message.episodeId, ...clip });
+    const local = await chrome.runtime.sendNativeMessage("com.youtube_digest.obsidian", { action: "audioClip", episodeId: message.episodeId, start: clip.start, end: clip.end });
     if (!local?.success) throw new Error(local?.error || "本地转写未完成。");
     if (typeof local.audio !== "string" || local.audio.length > 700000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(local.audio) || typeof local.localText !== "string" || !local.localText.trim() || local.localText.length > 30000 || !Number.isFinite(local.start) || !Number.isFinite(local.end) || local.start !== clip.start || local.end > clip.end || local.end <= local.start) throw new Error("本机音频或识别结果格式无效。");
     const actualClip = { start: local.start, end: local.end };
     const result = await complete("Listen", [
-      { type: "text", text: JSON.stringify({ segments, context, videoTitle, terminology, clip: actualClip, localCandidate: local.localText }) },
+      { type: "text", text: JSON.stringify({ segments, context, videoTitle, terminology, clip: actualClip, timingHint: clip.estimated ? "原稿多段共用粗时间戳，窗口按文字比例预估；必须核对实际音频是否包含本段，没有听到的内容不能改写。" : "", localCandidate: local.localText }) },
       { type: "input_audio", input_audio: { data: local.audio, format: "mp3" } },
     ], { modelOverride: message.audioModel });
     if (typeof result?.heardText !== "string" || !result.heardText.trim() || result.heardText.length > 30000) throw new Error("云端未返回实际音频识别候选，未标记为听音完成。");

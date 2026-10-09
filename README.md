@@ -25,6 +25,8 @@ Select an exact quote or click its paragraph annotation button and save your tho
 
 Polished selections retain both the reading quote and source passage. The derivative is saved separately as `知识库/阅读工作台/小宇宙-EPISODE_ID-精校阅读版.md`; alignment and audio candidates are stored in `_attachments/xiaoyuzhou/EPISODE_ID/reading-v1.json` under that workspace. Changed sources invalidate cached polishing. Manually edited derivatives are not silently replaced.
 
+When paragraphs share coarse timestamps, clip positions are estimated proportionally from text lengths with surrounding margin and explicitly flagged. Use actual recognition candidates to confirm which words the clip covers.
+
 Direct vault reads and saves require Python 3 and a local Native Messaging host. On macOS, copy the extension ID from its details in `chrome://extensions` and run once from this source folder:
 
 ```sh

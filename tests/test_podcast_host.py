@@ -380,6 +380,31 @@ class BridgeTests(unittest.TestCase):
                 altered['items'][0]['audioEvidence'] = evidence
                 self.assertRaises(host.BridgeError, self.vault.save_refined, ID, '节目', raw, source, altered)
 
+    def test_shared_timestamps_use_the_later_paragraph_window_instead_of_rechecking_the_start(self):
+        source, raw, reading = self.refined_source()
+        first, second = '甲' * 100, '乙' * 100
+        raw = '# 原稿\n\n来源：' + URL + '\n\n## 转写全文\n\n**[1:05] Speaker-00**\n\n' + first + '\n\n' + second + '\n\n**[4:25] Speaker-01**\n\n下一段。\n'
+        source.write_text(raw)
+        reading['sourceHash'] = hashlib.sha256(raw.encode()).hexdigest()
+        reading['total'] = 3
+        reading['items'][0].update(id='p-1', sourceText=second, text=second,
+                                  audioEvidence=dict(self.evidence(), start=157, end=247))
+        self.vault.save_refined(ID, '节目', raw, source, reading)
+        self.assertEqual(self.vault.load(ID)['reading']['items'][0]['audioEvidence']['start'], 157)
+        reading['items'][0]['audioEvidence'] = dict(self.evidence(), start=63, end=153)
+        self.assertRaises(host.BridgeError, self.vault.save_refined, ID, '节目', raw, source, reading)
+
+    def test_refined_markdown_keeps_referenced_source_uncertainty_footnotes(self):
+        source, raw, reading = self.refined_source()
+        raw = raw.replace('原句。第二行。', '原句[^u1]。第二行。')
+        source.write_text(raw)
+        reading['sourceHash'] = hashlib.sha256(raw.encode()).hexdigest()
+        reading['items'][0].update(sourceText='原句[^u1]。第二行。', text='原句[^u1]。第二行。')
+        self.vault.save_refined(ID, '节目', raw, source, reading)
+        document = self.vault.refined_paths(ID)[0].read_text()
+        self.assertEqual(document.count('[^u1]: 识别疑点，不是发言。'), 1)
+        self.assertEqual(source.read_text(), raw)
+
     def test_untimed_entry_cannot_be_marked_as_audio_checked(self):
         source, raw, reading = self.refined_source()
         raw = raw.replace('**[00:01:05] Speaker-00**\n\n', '')

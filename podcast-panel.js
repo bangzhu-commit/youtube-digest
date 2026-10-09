@@ -317,6 +317,9 @@ async function listenEntry(entry) {
     if (!result?.success) throw new Error(result?.error || "听音复核失败。");
     if (!result.evidence || !Number.isFinite(result.evidence.end)) throw new Error("缺少实际听音证据，未采用结果。");
     const next = entries.find(item => item.start > entry.start);
+    if (clip.estimated) {
+      for (const item of result.segments) item.issues = [...item.issues.slice(0, 19), "原稿多段共用时间戳，听音窗口按文字比例预估；请对照两份听音候选确认覆盖。"];
+    }
     if (!next || next.start + 2 > result.evidence.end) {
       for (const item of result.segments) {
         const issue = `本次只听取 ${YTD_PODCAST.stamp(result.evidence.start)}–${YTD_PODCAST.stamp(result.evidence.end)}；超出片段的内容未听音核验。`;

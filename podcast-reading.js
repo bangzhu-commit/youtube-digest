@@ -55,7 +55,23 @@
   }
   function audioWindow(entries, entry) {
     if (!Number.isFinite(entry.start)) throw new Error("这一段没有可回听的时间戳。");
-    const next = entries.find(item => item.start > entry.start);
+    const index = entries.indexOf(entry);
+    if (index < 0) throw new Error("没有找到这段原稿。");
+    let first = index, last = index;
+    while (first > 0 && entries[first - 1].start === entry.start) first--;
+    while (last + 1 < entries.length && entries[last + 1].start === entry.start) last++;
+    const next = entries.slice(last + 1).find(item => item.start > entry.start);
+    if (last > first && next) {
+      const group = entries.slice(first, last + 1), size = value => Math.max(1, value.text?.length || 0);
+      const total = group.reduce((sum, item) => sum + size(item), 0);
+      const before = entries.slice(first, index).reduce((sum, item) => sum + size(item), 0);
+      const span = next.start - entry.start;
+      const estimatedStart = entry.start + span * before / total;
+      const estimatedEnd = entry.start + span * (before + size(entry)) / total;
+      const start = Math.floor(Math.max(0, entry.start - 2, estimatedStart - 8) * 1000) / 1000;
+      const end = Math.floor(Math.min(start + 90, next.start + 2, estimatedEnd + 8) * 1000) / 1000;
+      return { start, end, estimated: true };
+    }
     const start = Math.max(0, entry.start - 2);
     const end = Math.min(start + 90, next ? next.start + 2 : entry.start + 60);
     return { start, end };

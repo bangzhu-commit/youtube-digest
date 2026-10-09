@@ -19,7 +19,8 @@ test('source alignment rejects missing, duplicate IDs, silent number changes and
 
 test('audio windows cover equal-timestamp paragraphs and never exceed ninety seconds', () => {
   const entries = [{ start: 10 }, { start: 10 }, { start: 200 }];
-  assert.deepEqual(reading.audioWindow(entries, entries[1]), { start: 8, end: 98 });
+  assert.deepEqual(reading.audioWindow(entries, entries[0]), { start: 8, end: 98, estimated: true });
+  assert.deepEqual(reading.audioWindow(entries, entries[1]), { start: 97, end: 187, estimated: true });
   assert.throws(() => reading.audioWindow([], { start: null }), /时间戳/);
 });
 

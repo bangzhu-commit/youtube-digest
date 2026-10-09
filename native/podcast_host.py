@@ -70,12 +70,14 @@ def checked_date(value):
     return value
 
 
-def checked_audio_evidence(value, start):
+def checked_audio_evidence(value, start, window=None):
     if not isinstance(value, dict) or set(value) != AUDIO_EVIDENCE_FIELDS:
         raise BridgeError('听音证据字段无效。')
     clip_start, clip_end = checked_window(value['start'], value['end'])
-    if start is None or not clip_start <= start < clip_end:
+    if start is None or (window is None and not clip_start <= start < clip_end):
         raise BridgeError('听音证据与原稿时间无法对应。')
+    if window is not None and (abs(clip_start - window[0]) > 0.001 or clip_end > window[1] + 0.001 or clip_end <= window[2]):
+        raise BridgeError('听音证据与本段窗口无法对应。')
     local, heard = text(value['localText'], 30000), text(value['heardText'], 30000)
     if not local.strip() or not heard.strip():
         raise BridgeError('听音证据缺少实际识别文字。')
@@ -86,6 +88,30 @@ def checked_audio_evidence(value, start):
     return dict(start=clip_start, end=clip_end, localText=local, heardText=heard,
                 localModel=LOCAL_AUDIO_MODEL, audioModel=audio_model,
                 provider='openrouter', checkedAt=checked_date(value['checkedAt']))
+
+
+def audio_window(entries, index):
+    start = entries[index]['start']
+    if start is None:
+        raise BridgeError('这一段没有听音时间戳。')
+    first = last = index
+    while first > 0 and entries[first - 1]['start'] == start:
+        first -= 1
+    while last + 1 < len(entries) and entries[last + 1]['start'] == start:
+        last += 1
+    next_start = next((entry['start'] for entry in entries[last + 1:]
+                       if entry['start'] is not None and entry['start'] > start), None)
+    if last > first and next_start is not None:
+        size = lambda entry: max(1, len(entry['text'].encode('utf-16-le')) // 2)
+        total = sum(size(entry) for entry in entries[first:last + 1])
+        before = sum(size(entry) for entry in entries[first:index])
+        target = start + (next_start - start) * before / total
+        target_end = start + (next_start - start) * (before + size(entries[index])) / total
+        clip_start = math.floor(max(0, start - 2, target - 8) * 1000) / 1000
+        clip_end = math.floor(min(clip_start + 90, next_start + 2, target_end + 8) * 1000) / 1000
+        return clip_start, clip_end, target
+    clip_start = max(0, start - 2)
+    return clip_start, min(clip_start + 90, next_start + 2 if next_start is not None else start + 60), start
 
 
 def source_entries(raw):
@@ -408,7 +434,7 @@ class Vault:
             if 'updatedAt' in item:
                 checked['updatedAt'] = checked_date(item['updatedAt'])
             if 'audioEvidence' in item:
-                checked['audioEvidence'] = checked_audio_evidence(item['audioEvidence'], start)
+                checked['audioEvidence'] = checked_audio_evidence(item['audioEvidence'], start, audio_window(originals, index))
             checked_items.append(checked)
         document, data = self.refined_paths(episode_id)
         if document.exists():
@@ -428,6 +454,11 @@ class Vault:
             content += f"**[{stamp(item['start'])}] {item.get('speaker', '')} · {label}**\n\n{item['text']}\n\n"
             if item['issues']:
                 content += '**校正记录与待核验事项**\n\n' + ''.join('- ' + issue.replace('\n', ' ') + '\n' for issue in item['issues']) + '\n'
+        used_text = '\n'.join(item['text'] for item in checked_items)
+        footnotes = [line for line in raw.splitlines()
+                     if (match := re.match(r'^(\[\^[^\]]+\]):', line)) and match[1] in used_text]
+        if footnotes:
+            content += '## 原稿的转写说明\n\n' + '\n\n'.join(footnotes) + '\n'
         stored = {key: reading[key] for key in ('version', 'sourceHash', 'items', 'total')}
         stored['items'] = checked_items
         stored['sourceHash'] = hashlib.sha256(canonical.encode()).hexdigest()
