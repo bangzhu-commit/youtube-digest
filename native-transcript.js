@@ -75,9 +75,16 @@ async function readNativeTranscript(videoId) {
   };
   const tried = new Set();
   const fetchTracks = async (tracks, source) => {
-    const rank = (track) => (String(track.languageCode || "").startsWith("en") ? 0 : 2)
-      + (track.kind === "asr" ? 1 : 0);
-    for (const track of [...tracks].sort((a, b) => rank(a) - rank(b)).slice(0, 2)) {
+    // Prefer existing Chinese captions over English/dubbed captions. Never
+    // request YouTube's automatic translation of an English track into Chinese.
+    const rank = (track) => {
+      const language = String(track.languageCode || "").toLowerCase();
+      const chinese = /^(zh|cmn|yue)(-|$)/.test(language);
+      const languageRank = chinese ? 0 : /^en(-|$)/.test(language) ? 10 : 20;
+      const scriptRank = chinese && /hant|tw|hk/.test(language) ? 1 : 0;
+      return languageRank + (track.kind === "asr" ? 3 : 0) + scriptRank;
+    };
+    for (const track of [...tracks].sort((a, b) => rank(a) - rank(b)).slice(0, 4)) {
       const original = safeCaptionUrl(track.baseUrl);
       if (!original) continue;
       const jsonUrl = new URL(original.href);

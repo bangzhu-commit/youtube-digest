@@ -21,6 +21,7 @@ let currentTranscript = null;
 let currentTranscriptText = null; // Plain text (for display/export)
 let currentTranscriptTimestamped = null; // With timestamps for AI analysis
 let currentTranscriptLanguage = null;
+const TRANSCRIPT_SOURCE_POLICY_VERSION = "chinese-native-first-v1";
 let currentVideoTitle = "";
 let currentChannelName = "";
 let currentVideoDescription = "";
@@ -1336,7 +1337,7 @@ function setupTranscriptSearch() {
 }
 
 function getDisplayedTranscriptText() {
-  if (currentTranscriptMode === "original") return currentTranscriptText || "";
+  if (currentTranscriptMode === "original" || isChineseTranscript()) return currentTranscriptText || "";
   return getActiveTranscriptSegments()
     .map((segment) => {
       const translated = transcriptParagraphCache.get(
@@ -1974,6 +1975,7 @@ async function saveToCache(videoId) {
       transcriptText: currentTranscriptText,
       transcriptTimestamped: currentTranscriptTimestamped,
       transcriptLanguage: currentTranscriptLanguage,
+      transcriptSourcePolicy: TRANSCRIPT_SOURCE_POLICY_VERSION,
       videoTitle: currentVideoTitle,
       channelName: currentChannelName,
       paragraphCache: paragraphCacheForVideo,
@@ -2049,6 +2051,10 @@ async function loadFromCache(videoId) {
     const cached = result[`digest_${videoId}`];
 
     if (!cached) return null;
+
+    // Earlier versions preferred English even when Chinese captions existed.
+    // Refetch once under the new policy, without clearing saved notes/settings.
+    if (cached.transcriptSourcePolicy !== TRANSCRIPT_SOURCE_POLICY_VERSION) return null;
 
     // Cache expires after 30 days
     const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
@@ -2555,6 +2561,16 @@ function getActiveTranscriptSegments() {
   return groupTranscriptEntries(currentTranscript || []);
 }
 
+function isChineseTranscript(language = currentTranscriptLanguage, text = currentTranscriptText) {
+  if (language) return /^(zh|cmn|yue)(-|$)/i.test(language);
+  // YouTube's visible transcript fallback does not provide a language code.
+  // Recognize Chinese prose, while excluding Japanese kana and sparse names.
+  const sample = String(text || "").slice(0, 2000).replace(/\s/g, "");
+  if (!sample || /[\u3040-\u30ff]/.test(sample)) return false;
+  const han = sample.match(/\p{Script=Han}/gu)?.length || 0;
+  return han >= 4 && han / sample.length >= 0.3;
+}
+
 function transcriptTranslationCacheKey(segment) {
   return `${currentVideoId}:zh:${TRANSLATION_PIPELINE_VERSION}:${currentTranslationQuality}:semantic:${segment.id}`;
 }
@@ -2826,6 +2842,16 @@ async function translateTranscript() {
   const segments = getActiveTranscriptSegments();
   if (!segments.length || currentTranscriptMode === "original") return;
 
+  // Chinese captions are already the requested reading text. Display the
+  // original in every mode, avoiding model calls, rewriting, and duplicate rows.
+  if (isChineseTranscript()) {
+    if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
+    transcriptScrollObserver = null;
+    activeTranslationQueue = null;
+    renderTranscript();
+    return;
+  }
+
   const generation = translationGeneration;
   const videoId = currentVideoId;
   const mode = currentTranscriptMode;
@@ -2920,4 +2946,9 @@ globalThis.__YTD_TRANSCRIPT_TESTING__ = {
   getNavigationUrl,
   renderSubtitleInlineMarkup,
   renderTranscriptSegmentContent,
+  isChineseTranscript,
+  getDisplayedTranscriptText,
+  loadFromCache,
+  saveToCache,
+  translateTranscript,
 };

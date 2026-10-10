@@ -35,6 +35,47 @@ test("current-video captions preserve timestamp and language without API keys", 
   assert.equal(fetched, "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94");
 });
 
+test("Chinese captions win over English dubbed ASR and preserve spoken wording", async () => {
+  const fetched = [];
+  const read = fixture({ tracks: [
+    { languageCode: "en", kind: "asr", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=en" },
+    { languageCode: "zh-Hant", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=zh-Hant" },
+    { languageCode: "zh-Hans", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=zh-Hans" },
+  ], fetchImpl: async (url) => {
+    fetched.push(url);
+    return { ok: true, json: async () => ({ events: [{ tStartMs: 1600, segs: [{ utf8: "大家好呀，咱们今天接着说。" }] }] }) };
+  } });
+  const result = await read("ydTeb_I0b94");
+  assert.equal(result.language, "zh-Hans");
+  assert.equal(result.transcriptText, "大家好呀，咱们今天接着说。");
+  assert.equal(result.transcript[0].start, 1.6);
+  assert.equal(fetched.length, 1);
+  assert.equal(new URL(fetched[0]).searchParams.get("lang"), "zh-Hans");
+  assert.equal(new URL(fetched[0]).searchParams.has("tlang"), false);
+});
+
+test("manual Traditional Chinese wins over simplified ASR", async () => {
+  const read = fixture({ tracks: [
+    { languageCode: "en", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=en" },
+    { languageCode: "zh-Hans", kind: "asr", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=zh-Hans" },
+    { languageCode: "zh-Hant", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=zh-Hant" },
+  ], fetchImpl: async () => ({ ok: true, json: async () => ({ events: [{ tStartMs: 0, segs: [{ utf8: "咱們接著說。" }] }] }) }) });
+  const result = await read("ydTeb_I0b94");
+  assert.equal(result.language, "zh-Hant");
+  assert.equal(result.transcriptText, "咱們接著說。");
+});
+
+test("empty preferred Chinese tracks still allow a readable original English track", async () => {
+  const read = fixture({ tracks: [
+    { languageCode: "zh-Hans", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=zh-Hans" },
+    { languageCode: "en", baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94&lang=en" },
+  ], fetchImpl: async (url) => ({ ok: true, json: async () => ({ events: new URL(url).searchParams.get("lang") === "en"
+    ? [{ tStartMs: 0, segs: [{ utf8: "Original English speech." }] }] : [] }) }) });
+  const result = await read("ydTeb_I0b94");
+  assert.equal(result.language, "en");
+  assert.equal(result.transcriptText, "Original English speech.");
+});
+
 test("empty caption responses fall back to the full built-in transcript", async () => {
   const read = fixture({ tracks: [{ baseUrl: "https://www.youtube.com/api/timedtext?v=ydTeb_I0b94" }], fetchImpl: async () => ({ ok: true, json: async () => ({ events: [] }) }), rows: [{ stamp: "1:02:03", text: "first" }, { stamp: "1:02:08", text: "next" }] });
   const result = await read("ydTeb_I0b94");

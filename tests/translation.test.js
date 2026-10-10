@@ -11,10 +11,12 @@ function loadSidepanelHelpers({
   sendMessage = () => Promise.resolve({}),
   setTimeoutImpl = () => 0,
   clearTimeoutImpl = () => {},
+  initialStorage = {},
+  documentOverride = {},
 } = {}) {
   const listeners = { addListener() {} };
   const sessionStorage = {};
-  const localStorage = {};
+  const localStorage = { ...initialStorage };
   const sandbox = {
     console,
     URL,
@@ -47,12 +49,13 @@ function loadSidepanelHelpers({
           },
         };
       },
+      ...documentOverride,
     },
     chrome: {
       runtime: { onMessage: listeners, sendMessage },
       storage: {
         local: {
-          get: async (key) => ({ [key]: localStorage[key] }),
+          get: async (key) => key === null ? { ...localStorage } : ({ [key]: localStorage[key] }),
           set: async (values) => Object.assign(localStorage, values),
         },
         session: {
@@ -66,7 +69,10 @@ function loadSidepanelHelpers({
     YTD_SETTINGS: {},
   };
   sandbox.globalThis = sandbox;
-  vm.runInNewContext(read("sidepanel.js"), sandbox);
+  vm.createContext(sandbox);
+  vm.runInContext(read("sidepanel.js"), sandbox);
+  sandbox.__YTD_TRANSCRIPT_TESTING__.run = (code) => vm.runInContext(code, sandbox);
+  sandbox.__YTD_TRANSCRIPT_TESTING__.storage = localStorage;
   return sandbox.__YTD_TRANSCRIPT_TESTING__;
 }
 
@@ -156,6 +162,90 @@ test("native mode retrieves subtitles without sending keys or charging Supadata"
   assert.equal(result.success, true);
   assert.equal(result.source, "youtube-captions");
   assert.equal(calls, 0);
+});
+
+test("Supadata prefers existing Chinese captions without generating or translating audio", async () => {
+  let request;
+  const background = loadBackgroundHelpers({
+    settings: { transcriptProvider: "supadata", supadataApiKey: "test-key" },
+    fetchImpl: async (url) => {
+      request = new URL(url);
+      return { ok: true, status: 200, json: async () => ({ lang: "zh", content: [{ text: "大家好呀。", offset: 1500, duration: 1000, lang: "zh" }] }) };
+    },
+  });
+  const result = await background.handleFetchTranscript("ydTeb_I0b94", 17);
+  assert.equal(request.searchParams.get("lang"), "zh");
+  assert.equal(request.searchParams.get("mode"), "native");
+  assert.equal(result.language, "zh");
+  assert.equal(result.transcriptText, "大家好呀。");
+});
+
+test("Chinese detection covers variants and unlabelled Chinese DOM transcripts", () => {
+  const { isChineseTranscript } = loadSidepanelHelpers();
+  for (const language of ["zh", "zh-CN", "zh-Hans", "zh-Hant", "cmn", "yue-HK"]) {
+    assert.equal(isChineseTranscript(language, "原话。"), true);
+  }
+  assert.equal(isChineseTranscript(null, "大家好，咱们今天接着聊一下 AI。"), true);
+  assert.equal(isChineseTranscript("en", "Original English speech."), false);
+  assert.equal(isChineseTranscript(null, "The Chinese name is 王海."), false);
+  assert.equal(isChineseTranscript(null, "これは日本語の字幕です。"), false);
+});
+
+test("Chinese and bilingual views render native Chinese once with zero translation requests", async () => {
+  let requests = 0;
+  const rows = [];
+  const transcriptList = { innerHTML: "", appendChild: (row) => rows.push(row) };
+  const panel = loadSidepanelHelpers({
+    sendMessage: async () => { requests++; throw new Error("Chinese source must not call translation"); },
+    documentOverride: {
+      getElementById: (id) => id === "transcriptList" ? transcriptList
+        : id === "followPlaybackBtn" ? { style: {} }
+          : id === "contentArea" ? { addEventListener() {}, removeEventListener() {} } : null,
+      createElement: () => {
+        let html = "";
+        return { dataset: {}, addEventListener() {},
+          set textContent(text) { html = String(text).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); },
+          set innerHTML(value) { html = value; },
+          get innerHTML() { return html; },
+        };
+      },
+    },
+  });
+  panel.run(`
+    currentVideoId = "ydTeb_I0b94";
+    currentTranscriptLanguage = "zh-Hans";
+    currentTranscriptText = "咱们今天呀，接着说。";
+    currentTranscript = [{ start: 0, text: currentTranscriptText }];
+  `);
+  for (const mode of ["zh", "bilingual"]) {
+    rows.length = 0;
+    panel.run(`currentTranscriptMode = "${mode}";`);
+    await panel.translateTranscript();
+    assert.equal(rows.length, 1);
+    assert.match(rows[0].innerHTML, /咱们今天呀，接着说。/);
+    assert.doesNotMatch(rows[0].innerHTML, /Waiting for translation|transcript-translation/);
+    assert.equal(panel.getDisplayedTranscriptText(), "咱们今天呀，接着说。");
+  }
+  assert.equal(requests, 0);
+});
+
+test("legacy English-first caches refetch while new-policy caches are reusable and notes remain", async () => {
+  const notes = [{ text: "保留我的笔记" }];
+  const panel = loadSidepanelHelpers({ initialStorage: {
+    digest_ydTeb_I0b94: { transcript: [{ text: "Old English" }], timestamp: Date.now() },
+    notes_ydTeb_I0b94: notes,
+  } });
+  assert.equal(await panel.loadFromCache("ydTeb_I0b94"), null);
+  assert.equal(panel.storage.notes_ydTeb_I0b94, notes);
+  panel.run(`
+    currentTranscriptLanguage = "zh-Hans";
+    currentTranscriptText = "中文原话。";
+    currentTranscript = [{ start: 0, text: currentTranscriptText }];
+  `);
+  await panel.saveToCache("ydTeb_I0b94");
+  const cached = await panel.loadFromCache("ydTeb_I0b94");
+  assert.equal(cached.transcriptText, "中文原话。");
+  assert.equal(panel.storage.notes_ydTeb_I0b94, notes);
 });
 
 test("OpenRouter and 302.ai requests use their endpoints without DeepSeek fields", async () => {

@@ -22,10 +22,19 @@ class Element {
 function panel({ cache = {}, load = async id => loaded(id), write = async () => {}, request = async () => ({}) } = {}) {
   const elements = new Map(), windowListeners = {};
   const element = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
+  const audioButtons = () => {
+    const found = new Set();
+    const visit = item => {
+      if (item.dataset?.audioReview !== undefined) found.add(item);
+      for (const child of item.children || []) visit(child);
+    };
+    for (const root of elements.values()) visit(root);
+    return [...found];
+  };
   element('annotationEditor').hidden = true;
   const sandbox = {
     console, URL, Blob, TextEncoder, crypto: { randomUUID, subtle: webcrypto.subtle }, setTimeout: () => 0, clearTimeout() {}, YTD_MEDIA: media, YTD_PODCAST: core, YTD_READING: require('../podcast-reading.js'),
-    document: { getElementById: element, querySelectorAll: () => [], createElement: () => new Element(), createTextNode: text => ({ textContent: text }) },
+    document: { getElementById: element, querySelectorAll: selector => selector === '[data-audio-review]' ? audioButtons() : [], createElement: () => new Element(), createTextNode: text => ({ textContent: text }) },
     window: { addEventListener: (name, fn) => windowListeners[name] = fn, close() {} },
     chrome: {
       storage: { local: { get: async key => structuredClone({ [key]: cache[key] }), set: async values => { await write(values); Object.assign(cache, structuredClone(values)); } } },
@@ -34,8 +43,26 @@ function panel({ cache = {}, load = async id => loaded(id), write = async () => 
     },
   };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
-  return { sandbox, element, cache, windowListeners, flush: () => vm.runInContext('storageWrites', sandbox) };
+  return { sandbox, element, cache, windowListeners, audioButtons, flush: () => vm.runInContext('storageWrites', sandbox) };
 }
+
+test('audio review becomes clickable after a vault read and recovers after a failed reread', async () => {
+  let rereading = false, release, entered;
+  const waiting = new Promise(resolve => entered = resolve);
+  const p = panel({ load: async id => {
+    if (!rereading) return loaded(id);
+    return new Promise(resolve => { release = resolve; entered(); });
+  } });
+  await p.sandbox.initialize(tab(A));
+  assert.equal(p.audioButtons().length, 1);
+  assert.equal(p.audioButtons()[0].disabled, false);
+  rereading = true;
+  const reread = p.sandbox.loadVault(); await waiting;
+  assert.equal(p.audioButtons()[0].disabled, true);
+  release({ success: false, error: 'temporary bridge failure' }); await reread;
+  assert.equal(p.audioButtons()[0].disabled, false);
+  assert.match(p.element('status').textContent, /temporary bridge failure/);
+});
 
 test('a late source read from another episode cannot replace the current text or title', async () => {
   let releaseA, receivedA;

@@ -22,6 +22,7 @@ function controls() {
   $("stopRefineBtn").hidden = !refining;
   $("stopRefineBtn").disabled = stopRefine;
   $("refineScope").disabled = busy; $("audioModel").disabled = busy;
+  document.querySelectorAll("[data-audio-review]").forEach(element => { element.disabled = busy; });
 }
 function view(name) {
   activeView = name;
@@ -89,7 +90,7 @@ function renderTranscript() {
     const item = readingItem(entry), textValue = displayText(entry);
     header.append(time, speaker);
     if (YTD_READING.eligible(entry) && entry.start !== null) {
-      const listen = button("听音复核", () => listenEntry(entry)); listen.disabled = busy; header.append(listen);
+      const listen = button("听音复核", () => listenEntry(entry)); listen.dataset.audioReview = ""; listen.disabled = busy; header.append(listen);
     }
     header.append(button("批注", () => openEditor(entry.text, entry.start, entry.id, readMode === "reading" && item ? item.text : undefined)));
     const text = paragraph("", "podcast-text"); highlight(text, textValue, query); row.append(header);

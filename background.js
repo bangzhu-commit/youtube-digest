@@ -715,7 +715,7 @@ async function handleFetchSupadataTranscript(videoId) {
     const apiUrl = new URL("https://api.supadata.ai/v1/transcript");
     apiUrl.searchParams.set("url", canonicalVideoUrl);
     apiUrl.searchParams.set("text", "false"); // Get timestamped chunks, not plain text
-    apiUrl.searchParams.set("lang", "en"); // Prefer English
+    apiUrl.searchParams.set("lang", "zh"); // Prefer existing Chinese captions; otherwise the provider returns an available track.
     // Caption-only product scope: never fall back to paid AI transcription.
     apiUrl.searchParams.set("mode", "native");
 
