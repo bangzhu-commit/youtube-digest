@@ -124,6 +124,40 @@ function fixture({
   return { read: sandbox.readNativeTranscript, calls, sandbox, webContext };
 }
 
+function transcriptPanel({
+  targetId = "PAmodern_transcript_view", visibility = "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED",
+  rows = [], segmentTag = "transcript-segment-view-model", hidden = false, hiddenAncestor = false,
+  loadingNodes = [],
+} = {}) {
+  const panel = {
+    tagName: "ytd-engagement-panel-section-list-renderer", hidden, hiddenAncestor, loadingNodes,
+    nodes: rows.map((row) => segment(row, segmentTag)), rowReads: 0,
+    getAttribute: (name) => name === "target-id" ? targetId : name === "visibility" ? visibility : null,
+    closest: () => panel.hiddenAncestor ? {} : null,
+    querySelector: (selector) => /spinner|aria-busy/.test(selector) ? panel.loadingNodes[0] || null : null,
+    querySelectorAll: (selector) => {
+      if (/spinner|aria-busy/.test(selector)) return panel.loadingNodes;
+      if (!matchesTag(selector, segmentTag)) return [];
+      panel.rowReads += 1;
+      return panel.nodes;
+    },
+  };
+  return panel;
+}
+
+function mountTranscriptPanels(sandbox, panels) {
+  const originalQuery = sandbox.document.querySelector;
+  const matches = (panel, selector) => selector.split(",").some((part) => {
+    const query = part.trim();
+    if (query.match(/^[a-z-]+/)?.[0] !== panel.tagName) return false;
+    return [...query.matchAll(/\[([^=\]]+)="([^"]+)"\]/g)]
+      .every(([, name, value]) => panel.getAttribute(name) === value);
+  });
+  sandbox.document.querySelector = (selector) =>
+    /ytd-engagement-panel-section-list-renderer|ytd-transcript-renderer|^transcript-renderer/.test(selector)
+      ? panels.find((panel) => matches(panel, selector)) || null : originalQuery(selector);
+}
+
 function playerRequest(call) {
   assert.equal(new URL(call.url).pathname, "/youtubei/v1/player");
   assert.equal(call.options.method, "POST");
@@ -369,6 +403,86 @@ test("modern transcript DOM is read after caption and player network routes fail
       assert.equal(sandbox.waitCalls, 1, "The initial DOM and next poll must provide identical snapshots");
     });
   }
+});
+
+test("the expanded modern transcript is read beside YouTube's hidden empty legacy panel", async () => {
+  const { read, sandbox } = fixture();
+  const legacy = transcriptPanel({
+    targetId: "engagement-panel-searchable-transcript", visibility: "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN",
+    segmentTag: "ytd-transcript-segment-renderer",
+  });
+  const modern = transcriptPanel({ rows: [
+    { stamp: "0:00", text: "Current video's opening" }, { stamp: "0:08", text: "Current video's next line" },
+  ] });
+  mountTranscriptPanels(sandbox, [legacy, modern]);
+  const result = await read(VIDEO_ID);
+  assert.equal(result.success, true);
+  assert.equal(result.source, "youtube-transcript");
+  assert.equal(result.transcriptText, "Current video's opening Current video's next line");
+  assert.equal(result.transcript[0].duration, 8);
+  assert.equal(sandbox.waitCalls, 1, "The modern panel still requires two matching snapshots");
+  assert.equal(legacy.rowReads, 0, "The hidden legacy panel is not a transcript source");
+});
+
+test("hidden legacy captions cannot replace the current transcript renderer fallback", async (t) => {
+  for (const mode of ["visibility", "hidden-self", "hidden-ancestor"]) {
+    await t.test(mode, async () => {
+      const { read, sandbox } = fixture();
+      const legacy = transcriptPanel({
+        targetId: "engagement-panel-searchable-transcript", segmentTag: "ytd-transcript-segment-renderer",
+        visibility: mode === "visibility" ? "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN" : "ENGAGEMENT_PANEL_VISIBILITY_EXPANDED",
+        hidden: mode === "hidden-self", hiddenAncestor: mode === "hidden-ancestor",
+        rows: [{ stamp: "0:00", text: "Stale captions from the previous video" }],
+      });
+      const modern = transcriptPanel({ rows: [{ stamp: "0:00", text: "Current video only" }] });
+      modern.tagName = "transcript-renderer";
+      mountTranscriptPanels(sandbox, [legacy, modern]);
+      const result = await read(VIDEO_ID);
+      assert.equal(result.success, true);
+      assert.equal(result.transcriptText, "Current video only");
+      assert.equal(legacy.rowReads, 0);
+      assert.equal(sandbox.waitCalls, 1);
+    });
+  }
+});
+
+test("an unrelated expanded comments panel is never used as the transcript panel", async () => {
+  const { read, sandbox } = fixture();
+  const comments = transcriptPanel({ targetId: "engagement-panel-comments-section" });
+  const modern = transcriptPanel({ rows: [{ stamp: "0:08", text: "Current modern transcript" }] });
+  mountTranscriptPanels(sandbox, [comments, modern]);
+  const result = await read(VIDEO_ID);
+  assert.equal(result.success, true);
+  assert.equal(result.transcriptText, "Current modern transcript");
+  assert.equal(comments.rowReads, 0, "Only transcript panels may be inspected for caption rows");
+});
+
+test("a modern panel waits for loading to finish and its complete rows to become stable", async () => {
+  const modern = transcriptPanel({
+    rows: [{ stamp: "0:00", text: "First line" }], loadingNodes: [loadingNode()],
+  });
+  const { read, sandbox } = fixture({ onWait: (state) => {
+    if (state.waitCalls === 1) {
+      modern.loadingNodes = [];
+      modern.nodes.push(segment({ stamp: "0:08", text: "Newly rendered line" }, "transcript-segment-view-model"));
+    }
+  } });
+  mountTranscriptPanels(sandbox, [modern]);
+  const result = await read(VIDEO_ID);
+  assert.equal(result.success, true);
+  assert.equal(result.transcriptText, "First line Newly rendered line");
+  assert.equal(sandbox.waitCalls, 2, "Two non-loading matching snapshots are required");
+});
+
+test("navigation while a modern transcript is stabilizing invalidates its captions", async () => {
+  const { read, sandbox } = fixture({ onWait: (state) => {
+    state.location.href = `${ORIGIN}/watch?v=another_id`;
+  } });
+  const modern = transcriptPanel({ rows: [{ stamp: "0:00", text: "Previous page's transcript" }] });
+  mountTranscriptPanels(sandbox, [modern]);
+  const result = await read(VIDEO_ID);
+  assert.equal(result.success, false);
+  assert.equal(result.error, "VIDEO_CHANGED");
 });
 
 test("a navigation before extraction prevents all native requests", async () => {

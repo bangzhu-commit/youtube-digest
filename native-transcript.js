@@ -114,32 +114,44 @@ async function readNativeTranscript(videoId) {
     let currentPlayer;
     try { currentPlayer = document.getElementById("movie_player")?.getPlayerResponse?.(); } catch (_) { return null; }
     if (currentPlayer?.videoDetails?.videoId && currentPlayer.videoDetails.videoId !== videoId) return null;
-    const panel = document.querySelector('ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]')
-      || document.querySelector('ytd-engagement-panel-section-list-renderer[visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]')
-      || document.querySelector("ytd-transcript-renderer, transcript-renderer");
-    const loadingSelector = 'tp-yt-paper-spinner[active], yt-spinner, [aria-busy="true"]';
-    const firstLoading = panel?.querySelector?.(loadingSelector);
-    const loading = firstLoading ? [firstLoading, ...(panel.querySelectorAll?.(loadingSelector) || [])] : [];
-    if ([...loading].some((node) => !node.hidden && !node.closest?.("[hidden]")
-      && (typeof node.getClientRects !== "function" || node.getClientRects().length > 0))) return null;
-    const nodes = panel?.querySelectorAll("ytd-transcript-segment-renderer, transcript-segment-view-model, yt-transcript-segment-view-model") || [];
-    const rows = [];
-    for (const node of nodes) {
-      const stampNode = node.querySelector(".segment-timestamp")
-        || node.querySelector(".ytwTranscriptSegmentViewModelTimestamp, .ytTranscriptSegmentViewModelTimestamp");
-      const stamp = clean(stampNode?.textContent);
-      if (!/^\d+(?::\d{2}){1,2}$/.test(stamp)) continue;
-      let text;
-      for (const selector of [".segment-text", "span.ytAttributedStringHost", "span.yt-core-attributed-string", '[role="text"]']) {
-        const candidate = clean(node.querySelector(selector)?.textContent);
-        if (candidate && candidate !== stamp) { text = candidate; break; }
+    // YouTube can keep an empty legacy panel beside the active modern one.
+    // Restrict expanded candidates to transcript panels, then skip hidden copies.
+    const panels = [...new Set([
+      'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]',
+      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"][visibility="ENGAGEMENT_PANEL_VISIBILITY_EXPANDED"]',
+      'ytd-engagement-panel-section-list-renderer[target-id="PAmodern_transcript_view"]',
+      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-searchable-transcript"]',
+      "ytd-transcript-renderer, transcript-renderer",
+    ].map((selector) => document.querySelector(selector)).filter(Boolean))];
+    for (const panel of panels) {
+      if (panel.hidden || panel.getAttribute?.("visibility") === "ENGAGEMENT_PANEL_VISIBILITY_HIDDEN"
+        || panel.closest?.('[hidden], [visibility="ENGAGEMENT_PANEL_VISIBILITY_HIDDEN"]')) continue;
+      const loadingSelector = 'tp-yt-paper-spinner[active], yt-spinner, [aria-busy="true"]';
+      const firstLoading = panel?.querySelector?.(loadingSelector);
+      const loading = firstLoading ? [firstLoading, ...(panel.querySelectorAll?.(loadingSelector) || [])] : [];
+      if ([...loading].some((node) => !node.hidden && !node.closest?.("[hidden]")
+        && (typeof node.getClientRects !== "function" || node.getClientRects().length > 0))) continue;
+      const nodes = panel?.querySelectorAll("ytd-transcript-segment-renderer, transcript-segment-view-model, yt-transcript-segment-view-model") || [];
+      const rows = [];
+      for (const node of nodes) {
+        const stampNode = node.querySelector(".segment-timestamp")
+          || node.querySelector(".ytwTranscriptSegmentViewModelTimestamp, .ytTranscriptSegmentViewModelTimestamp");
+        const stamp = clean(stampNode?.textContent);
+        if (!/^\d+(?::\d{2}){1,2}$/.test(stamp)) continue;
+        let text;
+        for (const selector of [".segment-text", "span.ytAttributedStringHost", "span.yt-core-attributed-string", '[role="text"]']) {
+          const candidate = clean(node.querySelector(selector)?.textContent);
+          if (candidate && candidate !== stamp) { text = candidate; break; }
+        }
+        const start = stamp.split(":").reduce((seconds, part) => seconds * 60 + Number(part), 0);
+        rows.push({ start, text, duration: 0, language: null });
       }
-      const start = stamp.split(":").reduce((seconds, part) => seconds * 60 + Number(part), 0);
-      rows.push({ start, text, duration: 0, language: null });
+      rows.sort((a, b) => a.start - b.start);
+      for (let index = 0; index < rows.length - 1; index++) rows[index].duration = Math.max(0, rows[index + 1].start - rows[index].start);
+      const result = formatResult(rows, null, "youtube-transcript");
+      if (result) return result;
     }
-    rows.sort((a, b) => a.start - b.start);
-    for (let index = 0; index < rows.length - 1; index++) rows[index].duration = Math.max(0, rows[index + 1].start - rows[index].start);
-    return formatResult(rows, null, "youtube-transcript");
+    return null;
   };
   // A complete caption response takes priority over a partially rendered panel.
   const inline = await fetchTracks(captionTracks(playerResponse), "youtube-captions");
