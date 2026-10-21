@@ -49,6 +49,8 @@ Select **YouTube page** for subtitles. This is the default and never sends reque
 
 ## Translation quality
 
+New videos default to Chinese; an explicit Original or Bilingual choice is remembered per video. Opening the Chinese or bilingual panel translates the current area with the configured provider and prefetches the next six segments. Batches remain serial with at most three segments, prioritizing the current reading position; prefetch does not recursively translate the full video. Cached, queued and in-flight segments are deduplicated, and failed segments require an explicit Retry. Switching videos or language stops further requests from the old queue. Existing Chinese captions are shown without model calls. Automatic translation and prefetch use provider credits; select Original to read without translation.
+
 The default Reviewed mode adapts baoyu-translate: neighboring subtitle context and consistent terminology guide the draft, then a separate model call compares it with the original and revises the Chinese. This compact subtitle workflow uses two model calls per batch; it is not the full article refinement pipeline. Quick mode uses one call. Choose the mode in Settings and reopen the side panel. New-version and mode-specific cache keys prevent old translations from masking the change. API costs and waiting time increase in Reviewed mode; automatic-caption errors can still affect the result. The original transcript and timestamps stay aligned. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and license.
 
 ## Limits and validation

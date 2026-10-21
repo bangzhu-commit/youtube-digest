@@ -374,14 +374,307 @@ test("the header exposes one universal language control for all result tabs", ()
   assert.doesNotMatch(`${html}\n${js}`, /From video subtitles/);
 });
 
-test("new videos default to Original while returning videos restore their choice", async () => {
+test("new videos default to Chinese while returning videos restore explicit choices", async () => {
   const { loadDisplayLanguageMode, saveDisplayLanguageMode } =
     loadSidepanelHelpers();
 
   await saveDisplayLanguageMode("video-a", "bilingual");
   assert.equal(await loadDisplayLanguageMode("video-a"), "bilingual");
-  assert.equal(await loadDisplayLanguageMode("unseen-video"), "original");
+  await saveDisplayLanguageMode("video-b", "original");
+  assert.equal(await loadDisplayLanguageMode("video-b"), "original");
+  assert.equal(await loadDisplayLanguageMode("unseen-video"), "zh");
 });
+
+function loadTranslationQueueFixture({ segmentCount = 24, cachedIndices = [] } = {}) {
+  const helpers = loadSidepanelHelpers();
+  helpers.run(`
+    var queueTest = {
+      segments: Array.from({ length: ${segmentCount} }, (_, index) => ({
+        id: 'queue-segment-' + index,
+        start: index * 10,
+        text: 'An English subtitle sentence for segment ' + index + '.',
+      })),
+      calls: [], pending: [], observers: [], active: 0, maxActive: 0,
+    };
+    queueTest.rows = queueTest.segments.map((_, index) => ({
+      dataset: { segmentIndex: String(index) },
+      classList: {
+        contains: name => name === 'translated' && transcriptParagraphCache.has(
+          transcriptTranslationCacheKey(queueTest.segments[index]),
+        ),
+      },
+    }));
+    currentVideoId = 'queue-video';
+    currentTranscriptMode = 'zh';
+    currentTranscriptLanguage = 'en';
+    getActiveTranscriptSegments = () => queueTest.segments;
+    renderTranscriptModeRows = () => queueTest.rows;
+    IntersectionObserver = class {
+      constructor(callback, options) {
+        this.callback = callback;
+        this.options = options;
+        this.disconnected = false;
+        this.observed = [];
+        queueTest.observers.push(this);
+      }
+      observe(row) { this.observed.push(row); }
+      unobserve() {}
+      disconnect() { this.disconnected = true; }
+    };
+    requestTranscriptTranslationBatch = async (indices) => {
+      queueTest.calls.push([...indices]);
+      queueTest.active += 1;
+      queueTest.maxActive = Math.max(queueTest.maxActive, queueTest.active);
+      const success = await new Promise(resolve => queueTest.pending.push(resolve));
+      if (success) {
+        indices.forEach(index => transcriptParagraphCache.set(
+          transcriptTranslationCacheKey(queueTest.segments[index]),
+          '第' + index + '段中文。',
+        ));
+      }
+      queueTest.active -= 1;
+    };
+    ${JSON.stringify(cachedIndices)}.forEach(index => transcriptParagraphCache.set(
+      transcriptTranslationCacheKey(queueTest.segments[index]), '已有中文。',
+    ));
+  `);
+
+  const snapshot = () => JSON.parse(helpers.run(`JSON.stringify({
+    calls: queueTest.calls,
+    active: queueTest.active,
+    maxActive: queueTest.maxActive,
+    pending: queueTest.pending.length,
+  })`));
+  let previousVisible = new Set();
+  let previousObserverCount = 0;
+  const visible = async (indices) => {
+    const observerCount = helpers.run("queueTest.observers.length");
+    if (observerCount !== previousObserverCount) previousVisible = new Set();
+    const nextVisible = new Set(indices);
+    const changes = [
+      ...[...previousVisible].filter(index => !nextVisible.has(index))
+        .map(index => ({ index, isIntersecting: false })),
+      ...indices.map(index => ({ index, isIntersecting: true })),
+    ];
+    helpers.run(`queueTest.observers.at(-1).callback(
+      ${JSON.stringify(changes)}.map(({ index, isIntersecting }) => ({
+        target: queueTest.rows[index], isIntersecting,
+      })),
+    )`);
+    previousVisible = nextVisible;
+    previousObserverCount = observerCount;
+    await nextTurn();
+  };
+  const complete = async (success = true) => {
+    assert.equal(helpers.run("queueTest.pending.length"), 1, "only one batch is active");
+    helpers.run(`queueTest.pending.shift()(${JSON.stringify(success)})`);
+    await nextTurn();
+  };
+  const drain = async () => {
+    for (let count = 0; snapshot().pending; count++) {
+      assert.ok(count < segmentCount + 2, "prefetch must terminate without looping");
+      await complete();
+    }
+  };
+  const start = async () => {
+    await helpers.translateTranscript();
+    await nextTurn();
+  };
+  return { helpers, snapshot, visible, complete, drain, start };
+}
+
+test("translation queue deduplicates pending first rows, runs serially and bounds initial prefetch", async () => {
+  const fixture = loadTranslationQueueFixture();
+  await fixture.start();
+  assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2]]);
+
+  // The browser reports these rows after the initial batch has already started.
+  await fixture.visible([0, 1, 2]);
+  await fixture.visible([0, 1, 2]);
+  assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2]]);
+  await fixture.drain();
+
+  assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2], [3, 4, 5], [6, 7, 8]]);
+  assert.equal(fixture.snapshot().maxActive, 1);
+  assert.equal(fixture.helpers.run("queueTest.observers[0].options.rootMargin"), "320px 0px");
+  await fixture.visible([0, 1, 2]);
+  assert.equal(fixture.snapshot().calls.length, 3, "cached viewport does not restart completed work");
+});
+
+test("rerendering the same transcript rebinds its observer and reuses an unfinished queue", async () => {
+  const fixture = loadTranslationQueueFixture();
+  await fixture.start();
+  await fixture.start();
+  assert.equal(fixture.helpers.run("queueTest.observers.length"), 2);
+  assert.equal(fixture.helpers.run("queueTest.observers[0].disconnected"), true);
+  assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2]]);
+  await fixture.visible([0, 1, 2]);
+  await fixture.drain();
+  assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2], [3, 4, 5], [6, 7, 8]]);
+  assert.equal(fixture.snapshot().maxActive, 1);
+});
+
+test("newly visible rows take the next batch ahead of queued speculative prefetch", async () => {
+  const fixture = loadTranslationQueueFixture();
+  await fixture.start();
+  await fixture.visible([15, 16]);
+  assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2]], "an already sent batch remains active");
+  await fixture.complete();
+  assert.deepEqual(fixture.snapshot().calls[1].slice(0, 2), [15, 16]);
+  await fixture.drain();
+  const requested = fixture.snapshot().calls.flat();
+  assert.equal(new Set(requested).size, requested.length);
+  assert.deepEqual([...requested].sort((a, b) => a - b), [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 15, 16, 17, 18, 19, 20, 21, 22,
+  ]);
+  assert.equal(fixture.snapshot().maxActive, 1);
+});
+
+test("rows scrolled away lose priority when a new viewport replaces them", async () => {
+  const fixture = loadTranslationQueueFixture();
+  await fixture.start();
+  await fixture.visible([3, 4]);
+  await fixture.visible([15, 16]);
+  assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2]]);
+  await fixture.complete();
+  assert.deepEqual(fixture.snapshot().calls[1].slice(0, 2), [15, 16]);
+  await fixture.drain();
+  const requested = fixture.snapshot().calls.flat();
+  assert.equal(new Set(requested).size, requested.length);
+  assert.equal(fixture.snapshot().maxActive, 1);
+});
+
+test("scrolling prefetches six rows after the last visible row without extending to the whole video", async () => {
+  const fixture = loadTranslationQueueFixture();
+  await fixture.start();
+  await fixture.drain();
+
+  await fixture.visible([10, 11]);
+  await fixture.drain();
+  const requested = fixture.snapshot().calls.slice(3).flat();
+  assert.deepEqual(requested, [10, 11, 12, 13, 14, 15, 16, 17]);
+  assert.ok(!requested.includes(9), "rows outside the requested viewport are not backfilled");
+  assert.ok(!requested.includes(18), "completion does not recursively prefetch the rest");
+  assert.equal(fixture.snapshot().maxActive, 1);
+});
+
+test("translation queue skips cached segments before dispatching and does not duplicate requested rows", async () => {
+  const fixture = loadTranslationQueueFixture({ cachedIndices: [0, 1, 2, 4, 6] });
+  await fixture.start();
+  await fixture.visible([0, 1, 2]);
+  await fixture.drain();
+  const requested = fixture.snapshot().calls.flat();
+  assert.deepEqual([...requested].sort((a, b) => a - b), [3, 5, 7, 8]);
+  assert.equal(new Set(requested).size, requested.length);
+});
+
+test("scrolling through cached rows still observes the viewport and prefetches beyond the cache", async () => {
+  const fixture = loadTranslationQueueFixture({ cachedIndices: [0, 1, 2, 3, 4, 5, 6, 7, 8] });
+  await fixture.start();
+  assert.deepEqual(fixture.snapshot().calls, []);
+  assert.equal(fixture.helpers.run("queueTest.observers[0].observed.includes(queueTest.rows[8])"), true);
+  await fixture.visible([6, 7, 8]);
+  await fixture.drain();
+  assert.deepEqual(fixture.snapshot().calls.flat(), [9, 10, 11, 12, 13, 14]);
+});
+
+test("failed translation stays failed on observer updates until an explicit retry", async () => {
+  const fixture = loadTranslationQueueFixture();
+  await fixture.start();
+  await fixture.visible([0, 1, 2]);
+  await fixture.complete(false);
+  await fixture.visible([0, 1, 2]);
+  await fixture.drain();
+  assert.equal(fixture.snapshot().calls.flat().filter(index => index === 0).length, 1);
+
+  fixture.helpers.run("activeTranslationQueue.enqueue(0, true)");
+  await nextTurn();
+  assert.deepEqual(fixture.snapshot().calls.at(-1), [0]);
+  await fixture.complete();
+  assert.equal(fixture.snapshot().calls.flat().filter(index => index === 0).length, 2);
+});
+
+for (const [change, code] of [
+  ["generation", "translationGeneration += 1"],
+  ["video", "currentVideoId = 'another-video'"],
+  ["display language", "currentTranscriptMode = 'bilingual'"],
+]) {
+  test(`an old translation queue stops after a ${change} change`, async () => {
+    const fixture = loadTranslationQueueFixture();
+    await fixture.start();
+    fixture.helpers.run(code);
+    await fixture.complete();
+    await fixture.visible([10, 11]);
+    assert.deepEqual(fixture.snapshot().calls, [[0, 1, 2]]);
+    assert.equal(fixture.snapshot().pending, 0);
+  });
+}
+
+for (const [surface, request] of [
+  ["transcript", "requestTranscriptTranslationBatch([0], spinnerSegments, translationGeneration, currentVideoId, currentTranscriptMode)"],
+  ["overview", "translateInterfaceSegments('overview', spinnerSegments, () => {})"],
+]) {
+  test(`an old ${surface} response cannot clear the new video's translation spinner`, async () => {
+    const pending = [];
+    let spinnerVisible = false;
+    const helpers = loadSidepanelHelpers({
+      sendMessage: (message) => new Promise(resolve => pending.push({ message, resolve })),
+      documentOverride: {
+        getElementById: (id) => id === "langSpinner"
+          ? { classList: { toggle: (_, visible) => { spinnerVisible = visible; } } }
+          : id === "tabsNav" ? { style: {} } : null,
+      },
+    });
+    helpers.run(`
+      var spinnerSegments = [{ id: 'spinner-0', start: 0, text: 'An English subtitle for the spinner test.' }];
+      currentVideoId = 'spinner-video-a';
+      currentTranscriptMode = 'zh';
+      currentAnalysis = null;
+      currentVideoTitle = '';
+      currentChannelName = '';
+      resetTranscriptSearch = () => {};
+      loadTranscriptViewState = async () => null;
+      loadDisplayLanguageMode = async () => 'zh';
+      loadFromCache = async () => ({ transcript: spinnerSegments });
+      renderTranscript = () => {};
+      showState = () => {};
+      restorePendingTranscriptViewState = () => {};
+      loadNotes = () => {};
+      setupExplainFeature = () => {};
+      translateTranscript = () => {};
+      updateTranslatedRow = () => {};
+      refreshTranscriptSearch = () => {};
+      updateCache = async () => {};
+      var spinnerRequestA = ${request};
+    `);
+    await nextTurn();
+    assert.equal(pending.length, 1);
+    assert.equal(helpers.run("translationWorkCount"), 1);
+    assert.equal(spinnerVisible, true);
+
+    // Exercise startDigest's actual video-change reset, with only rendering and
+    // cached transcript loading replaced. Both translation request paths are real.
+    await helpers.run("startDigest('spinner-video-b', 'https://www.youtube.com/watch?v=spinner-video-b')");
+    assert.equal(helpers.run("currentVideoId"), "spinner-video-b");
+    assert.equal(helpers.run("translationWorkCount"), 0);
+    assert.equal(spinnerVisible, false);
+    helpers.run(`var spinnerRequestB = ${request}`);
+    await nextTurn();
+    assert.equal(pending.length, 2);
+    assert.equal(helpers.run("translationWorkCount"), 1);
+    assert.equal(spinnerVisible, true);
+
+    const reply = { success: true, translatedContent: { segments: [{ id: "spinner-0", text: "中文译文。" }] } };
+    pending[0].resolve(reply);
+    await helpers.run("spinnerRequestA");
+    assert.equal(helpers.run("translationWorkCount"), 1, "stale completion leaves the current request counted");
+    assert.equal(spinnerVisible, true);
+    pending[1].resolve(reply);
+    await helpers.run("spinnerRequestB");
+    assert.equal(helpers.run("translationWorkCount"), 0);
+    assert.equal(spinnerVisible, false);
+  });
+}
 
 test("Overview shares the Transcript batch generation and retries when opened", () => {
   const js = read("sidepanel.js");

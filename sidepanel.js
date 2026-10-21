@@ -33,7 +33,7 @@ let errorAction = null;
 // --- Translation state ---
 // The universal language control supports original content, Chinese, and an
 // aligned bilingual view across Transcript, Overview, and Notes.
-let currentTranscriptMode = "original";
+let currentTranscriptMode = "zh";
 const DISPLAY_LANGUAGE_MODE_KEY = "ytd_display_language_modes_by_video";
 const DISPLAY_LANGUAGE_MODES = new Set(["original", "zh", "bilingual"]);
 let translationGeneration = 0; // Invalidates responses from older UI modes/videos.
@@ -50,6 +50,7 @@ let currentNotes = [];
 let currentNotesFilterVideoId = null;
 const TRANSLATION_MESSAGE_TIMEOUT_MS = 260_000;
 const TRANSLATION_BATCH_SIZE = 3;
+const TRANSLATION_PREFETCH_SEGMENTS = 6;
 
 // --- Transcript search state ---
 // Matches point to visible marks in the active transcript language mode.
@@ -259,7 +260,7 @@ function groupTranscriptEntries(entries, limits = TRANSCRIPT_SEGMENT_LIMITS) {
 // ============================================================
 
 document.addEventListener("DOMContentLoaded", async () => {
-  setTranscriptModeButtons("original");
+  setTranscriptModeButtons("zh");
   setupEventListeners();
   await evictOldCacheEntries(20);
 
@@ -567,7 +568,7 @@ function extractVideoId(url) {
 
 async function startDigest(videoId, videoUrl) {
   // Check if we already have this video loaded in memory
-  if (videoId === currentVideoId && currentAnalysis) {
+  if (videoId === currentVideoId && (currentAnalysis || currentTranscript?.length)) {
     showState("results");
     return;
   }
@@ -577,13 +578,15 @@ async function startDigest(videoId, videoUrl) {
   // Every video change invalidates observer work and in-flight translations.
   if (videoChanged) {
     translationGeneration += 1;
+    translationWorkCount = 0;
+    setTranslatingSpinner(false);
     if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
     transcriptScrollObserver = null;
     resetTranscriptSearch();
     lastTranscriptScrollTop = 0;
     pendingTranscriptViewState = await loadTranscriptViewState(videoId);
-    // An unseen video always starts in Original, so opening it never spends
-    // translation tokens. A saved choice is restored only for this video.
+    // New videos default to Chinese. An explicit choice is restored for a
+    // returning video, including Original when translation is not wanted.
     currentTranscriptMode = await loadDisplayLanguageMode(videoId);
     document
       .getElementById("contentArea")
@@ -831,7 +834,7 @@ async function translateInterfaceSegments(surface, segments, rerender) {
     );
   } finally {
     missing.forEach((segment) => interfaceTranslationInFlight.delete(segment.cacheKey));
-    setTranslatingSpinner(false);
+    if (generation === translationGeneration) setTranslatingSpinner(false);
   }
 }
 
@@ -2526,17 +2529,18 @@ function restorePendingTranscriptViewState(videoId) {
 
 async function loadDisplayLanguageMode(videoId) {
   if (!videoId) {
-    setTranscriptModeButtons("original");
-    return "original";
+    currentTranscriptMode = "zh";
+    setTranscriptModeButtons("zh");
+    return "zh";
   }
   try {
     const stored = await chrome.storage.local.get(DISPLAY_LANGUAGE_MODE_KEY);
     const mode = stored?.[DISPLAY_LANGUAGE_MODE_KEY]?.[videoId]?.mode;
     currentTranscriptMode = DISPLAY_LANGUAGE_MODES.has(mode)
       ? mode
-      : "original";
+      : "zh";
   } catch (error) {
-    currentTranscriptMode = "original";
+    currentTranscriptMode = "zh";
   }
   setTranscriptModeButtons(currentTranscriptMode);
   return currentTranscriptMode;
@@ -2763,6 +2767,7 @@ async function requestTranscriptTranslationBatch(
   generation,
   videoId,
   mode,
+  queueOwner,
 ) {
   const sourceBatch = indices.map((index) => segments[index]);
   setTranslatingSpinner(true);
@@ -2781,7 +2786,8 @@ async function requestTranscriptTranslationBatch(
     const isStale =
       generation !== translationGeneration ||
       videoId !== currentVideoId ||
-      mode !== currentTranscriptMode;
+      mode !== currentTranscriptMode ||
+      (queueOwner && queueOwner !== activeTranslationQueue);
     if (isStale) return;
 
     const responseSegments = result?.success
@@ -2792,6 +2798,7 @@ async function requestTranscriptTranslationBatch(
       if (!result?.success) {
         item.error = result?.error || "Translation failed.";
       }
+      queueOwner?.results.set(indices[batchIndex], item);
       updateTranslatedRow(
         sourceBatch[batchIndex],
         indices[batchIndex],
@@ -2802,18 +2809,22 @@ async function requestTranscriptTranslationBatch(
     refreshTranscriptSearch({ preserveIndex: true, scroll: false });
     await updateCache();
   } catch (error) {
-    if (generation !== translationGeneration) return;
+    if (generation !== translationGeneration ||
+        videoId !== currentVideoId || mode !== currentTranscriptMode ||
+        (queueOwner && queueOwner !== activeTranslationQueue)) return;
     sourceBatch.forEach((segment, batchIndex) => {
+      const item = { id: segment.id, text: "", error: error.message || "Translation failed." };
+      queueOwner?.results.set(indices[batchIndex], item);
       updateTranslatedRow(
         segment,
         indices[batchIndex],
-        { id: segment.id, text: "", error: error.message || "Translation failed." },
+        item,
         generation,
       );
     });
     refreshTranscriptSearch({ preserveIndex: true, scroll: false });
   } finally {
-    setTranslatingSpinner(false);
+    if (generation === translationGeneration) setTranslatingSpinner(false);
   }
 }
 
@@ -2835,8 +2846,9 @@ function retryTranslationSegment(index, generation) {
 }
 
 /**
- * Renders immediately, translates the first small batch, then observes the
- * remaining rows. Batches are sequential so the provider is never flooded.
+ * Translate visible rows first and prefetch six following segments. Pending,
+ * in-flight and attempted rows stay distinct so observer callbacks cannot
+ * duplicate paid requests or repeatedly retry failures. Batches stay serial.
  */
 async function translateTranscript() {
   const segments = getActiveTranscriptSegments();
@@ -2855,19 +2867,46 @@ async function translateTranscript() {
   const generation = translationGeneration;
   const videoId = currentVideoId;
   const mode = currentTranscriptMode;
+  const signature = JSON.stringify(segments.map(({ id, text }) => [id, text]));
+  if (activeTranslationQueue?.generation === generation &&
+      activeTranslationQueue.videoId === videoId &&
+      activeTranslationQueue.mode === mode &&
+      activeTranslationQueue.signature === signature) {
+    // Rebind after a rerender without restarting work already sent to Chrome.
+    activeTranslationQueue.bindRows();
+    return;
+  }
   if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
 
-  const rows = renderTranscriptModeRows(segments, mode);
   const queue = [];
-  const queued = new Set();
+  const queued = new Map();
+  const inFlight = new Set();
+  const attempted = new Set();
+  const visible = new Set();
   let processing = false;
+  const isCurrentQueue = () => generation === translationGeneration &&
+    videoId === currentVideoId && mode === currentTranscriptMode &&
+    activeTranslationQueue === queueOwner;
+  const isCached = (index) => transcriptParagraphCache.has(
+    transcriptTranslationCacheKey(segments[index]),
+  );
 
   const processNext = async () => {
-    if (processing || queue.length === 0 || generation !== translationGeneration)
-      return;
+    if (processing || !isCurrentQueue()) return;
+    // Visible rows and explicit retries take precedence over speculative work.
+    queue.sort((a, b) => Number(a.prefetch) - Number(b.prefetch) || a.index - b.index);
+    const indices = [];
+    while (queue.length && indices.length < TRANSLATION_BATCH_SIZE) {
+      const { index, force } = queue.shift();
+      queued.delete(index);
+      // Recheck at dequeue time: another response may have populated the cache.
+      if (inFlight.has(index) || (!force && (isCached(index) || attempted.has(index)))) continue;
+      indices.push(index);
+      inFlight.add(index);
+      attempted.add(index);
+    }
+    if (!indices.length) return;
     processing = true;
-    const indices = queue.splice(0, TRANSLATION_BATCH_SIZE);
-    indices.forEach((index) => queued.delete(index));
     try {
       await requestTranscriptTranslationBatch(
         indices,
@@ -2875,49 +2914,79 @@ async function translateTranscript() {
         generation,
         videoId,
         mode,
+        queueOwner,
       );
     } finally {
+      indices.forEach((index) => inFlight.delete(index));
       processing = false;
-      if (queue.length && generation === translationGeneration) processNext();
+      if (queue.length && isCurrentQueue()) void processNext();
     }
   };
 
-  const enqueue = (index, force = false) => {
-    if (!Number.isInteger(index) || !segments[index]) return;
-    const cached = transcriptParagraphCache.has(
-      transcriptTranslationCacheKey(segments[index]),
-    );
-    if ((!force && cached) || queued.has(index)) return;
-    queue.push(index);
-    queued.add(index);
+  const enqueue = (index, force = false, prefetch = false) => {
+    if (!isCurrentQueue() || !Number.isInteger(index) || !segments[index]) return;
+    if (inFlight.has(index) || (!force && (isCached(index) || attempted.has(index)))) return;
+    if (force) queueOwner.results.delete(index);
+    const pending = queued.get(index);
+    if (pending) {
+      pending.prefetch = pending.prefetch && prefetch;
+      pending.force = pending.force || force;
+      return;
+    }
+    const pendingEntry = { index, force, prefetch };
+    queue.push(pendingEntry);
+    queued.set(index, pendingEntry);
     // Let all entries reported in the same viewport turn collect before the
     // worker starts, producing one small contextual multi-segment request.
     Promise.resolve().then(processNext);
   };
-  activeTranslationQueue = { enqueue };
 
-  transcriptScrollObserver = new IntersectionObserver(
-    (observerEntries) => {
-      observerEntries
-        .filter((entry) => entry.isIntersecting)
-        .sort(
-          (a, b) =>
-            Number(a.target.dataset.segmentIndex) -
-            Number(b.target.dataset.segmentIndex),
-        )
-        .forEach((entry) => enqueue(Number(entry.target.dataset.segmentIndex)));
-    },
-    {
-      root: document.getElementById("contentArea"),
-      rootMargin: "320px 0px",
-      threshold: 0,
-    },
-  );
+  const prefetchAfter = (lastVisibleIndex) => {
+    for (let index = lastVisibleIndex + 1;
+      index <= lastVisibleIndex + TRANSLATION_PREFETCH_SEGMENTS;
+      index += 1) enqueue(index, false, true);
+  };
 
-  rows.forEach((row, index) => {
-    if (!row.classList.contains("translated")) transcriptScrollObserver.observe(row);
-    if (index < TRANSLATION_BATCH_SIZE) enqueue(index);
-  });
+  const bindRows = () => {
+    if (transcriptScrollObserver) transcriptScrollObserver.disconnect();
+    const rows = renderTranscriptModeRows(segments, mode);
+    queueOwner.results.forEach((item, index) => {
+      updateTranslatedRow(segments[index], index, item, generation);
+    });
+    transcriptScrollObserver = new IntersectionObserver(
+      (observerEntries) => {
+        if (!isCurrentQueue()) return;
+        observerEntries.forEach((entry) => {
+          const index = Number(entry.target.dataset.segmentIndex);
+          if (!Number.isInteger(index) || !segments[index]) return;
+          if (entry.isIntersecting) visible.add(index);
+          else visible.delete(index);
+        });
+        // IntersectionObserver reports changes, not a complete viewport. Keep
+        // its current set so rows scrolled away lose their visible priority.
+        queue.forEach((pending) => {
+          if (!pending.force) pending.prefetch = !visible.has(pending.index);
+        });
+        const visibleIndices = [...visible].sort((a, b) => a - b);
+        visibleIndices.forEach((index) => enqueue(index));
+        if (visibleIndices.length) prefetchAfter(visibleIndices[visibleIndices.length - 1]);
+      },
+      {
+        root: document.getElementById("contentArea"),
+        rootMargin: "320px 0px",
+        threshold: 0,
+      },
+    );
+    rows.forEach((row) => {
+      // Observe cached rows too: scrolling through them should prefetch ahead.
+      transcriptScrollObserver.observe(row);
+    });
+  };
+  const queueOwner = { enqueue, bindRows, generation, videoId, mode, signature, results: new Map() };
+  activeTranslationQueue = queueOwner;
+  bindRows();
+  for (let index = 0; index < TRANSLATION_BATCH_SIZE; index += 1) enqueue(index);
+  prefetchAfter(TRANSLATION_BATCH_SIZE - 1);
 }
 
 function setTranslatingSpinner(show) {
