@@ -3,6 +3,7 @@ import base64
 import hashlib
 import importlib.util
 import io
+import errno
 import json
 from pathlib import Path
 import struct
@@ -29,6 +30,53 @@ class BridgeTests(unittest.TestCase):
         self.config = {'vault': str(self.root)}
         self.vault = host.Vault(self.config)
         self.payload = {'action': 'save', 'episodeId': ID, 'title': '测试节目', 'raw': '[1:05] 原句。\n第二行', 'body': '**[1:05]**\n\n原句。\n第二行', 'annotations': [copy.deepcopy(NOTE)]}
+
+    def test_unrelated_cloud_read_failure_does_not_hide_existing_episode(self):
+        self.vault.sources.mkdir(parents=True)
+        source = self.vault.sources / f'小宇宙-{ID}-转写全文.md'
+        source.write_text(f'# 本集\n\n来源：{URL}\n\n## 转写全文\n\n正文')
+        unrelated = self.vault.sources / '000-暂不可读.md'
+        unrelated.write_text('无关文件')
+        actual_open, opened = Path.open, []
+        def flaky(path, *args, **kwargs):
+            opened.append(path)
+            if path == unrelated:
+                raise OSError(errno.EDEADLK, 'Resource deadlock avoided')
+            return actual_open(path, *args, **kwargs)
+        with mock.patch.object(Path, 'open', flaky):
+            result = self.vault.load(ID)
+        self.assertTrue(result['found'])
+        self.assertEqual(opened[0], source)
+        self.assertTrue(result['sourceScanIncomplete'])
+        self.assertEqual(result['sourceReadFailures'], [unrelated.name])
+
+    def test_unreadable_sources_without_a_match_report_incomplete_scan(self):
+        self.vault.sources.mkdir(parents=True)
+        unreadable = self.vault.sources / 'legacy.md'
+        unreadable.write_bytes(b'\xff')
+        with self.assertRaisesRegex(host.BridgeError, '扫描不完整'):
+            self.vault.load(ID)
+        self.assertEqual(self.vault.source_read_failures, [unreadable.name])
+
+    def test_readable_legacy_duplicate_is_detected_even_with_cloud_failures(self):
+        self.vault.sources.mkdir(parents=True)
+        content = f'# 本集\n\n{URL}\n\n## 转写全文\n\n正文'
+        (self.vault.sources / f'小宇宙-{ID}-转写全文.md').write_text(content)
+        (self.vault.sources / '旧名称.md').write_text(content)
+        (self.vault.sources / '乱码.md').write_bytes(b'\xff')
+        with self.assertRaisesRegex(host.BridgeError, '多个同集全文'):
+            self.vault.source(ID)
+
+    def test_source_publication_lock_rejects_symlinks_before_saving(self):
+        folder = self.vault.sources / '_attachments/xiaoyuzhou' / ID
+        folder.mkdir(parents=True)
+        target = self.root / 'unrelated.lock'
+        target.write_text('unchanged')
+        (folder / 'source-publish.lock').symlink_to(target)
+        with self.assertRaisesRegex(host.BridgeError, '符号链接'):
+            self.vault.handle(self.payload)
+        self.assertEqual(target.read_text(), 'unchanged')
+        self.assertEqual(list(self.vault.sources.glob('*.md')), [])
 
     def refined_source(self):
         self.vault.sources.mkdir(parents=True, exist_ok=True)

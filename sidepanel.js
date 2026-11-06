@@ -48,7 +48,7 @@ let interfaceTranslationInFlight = new Set();
 let interfaceTranslationFailures = new Set();
 let currentNotes = [];
 let currentNotesFilterVideoId = null;
-const TRANSLATION_MESSAGE_TIMEOUT_MS = 260_000;
+const TRANSLATION_MESSAGE_TIMEOUT_MS = 310_000;
 const TRANSLATION_BATCH_SIZE = 3;
 const TRANSLATION_PREFETCH_SEGMENTS = 6;
 
@@ -78,7 +78,7 @@ function sendTranslationMessage(message) {
       finish(
         reject,
         new Error(
-          "Translation request timed out after 260 seconds. Please Retry.",
+          "Translation request timed out after 310 seconds. Please Retry.",
         ),
       );
     }, TRANSLATION_MESSAGE_TIMEOUT_MS);

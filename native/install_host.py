@@ -15,6 +15,8 @@ def main():
     parser.add_argument('--vault', required=True)
     parser.add_argument('--config-dir', type=Path)
     parser.add_argument('--host-dir', type=Path)
+    parser.add_argument('--allow-fake-ip-dns', action=argparse.BooleanOptionalAction, default=None,
+                        help='Allow 198.18.0.0/15 proxy Fake-IP for the exact supported HTTPS hosts; default preserves the previous setting.')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-p]{32}', args.extension_id):
         parser.error('extension-id must be the 32-character ID shown in Chrome extensions')
@@ -29,7 +31,20 @@ def main():
     hosts.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
     config = state / 'obsidian.json'
-    config.write_text(json.dumps({'vault': str(vault), 'ffmpeg': shutil.which('ffmpeg')}, ensure_ascii=False), encoding='utf-8')
+    previous = {}
+    if config.is_file():
+        try:
+            previous = json.loads(config.read_text(encoding='utf-8'))
+            if not isinstance(previous, dict):
+                raise ValueError('configuration is not an object')
+        except (ValueError, UnicodeError) as error:
+            parser.error('existing bridge configuration is invalid; preserve and inspect it before reinstalling')
+    allow_fake_ip = previous.get('allowFakeIpDns') is True if args.allow_fake_ip_dns is None else args.allow_fake_ip_dns
+    config.write_text(json.dumps({**previous, 'vault': str(vault),
+                                 'ffmpeg': shutil.which('ffmpeg') or previous.get('ffmpeg'),
+                                 'codex': shutil.which('codex') or previous.get('codex'),
+                                 'python': sys.executable, 'allowFakeIpDns': allow_fake_ip},
+                                ensure_ascii=False), encoding='utf-8')
     config.chmod(0o600)
     launcher = state / 'podcast-host'
     script = Path(__file__).with_name('podcast_host.py').resolve()

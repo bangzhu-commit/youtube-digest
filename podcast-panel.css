@@ -10,6 +10,12 @@
 .source-compare summary { cursor: pointer; }
 .podcast-row-header { flex-wrap: wrap; }
 .podcast-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }
+.podcast-toolbar .primary { color: white; background: var(--accent); }
+.transcription-task { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface); }
+.transcription-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; }
+.transcription-task progress { display: block; width: 100%; height: 7px; margin: 9px 0; accent-color: var(--accent); }
+.transcription-task .podcast-status { margin: 0; line-height: 1.7; }
+.overview-coverage { color: var(--text-secondary); font-size: 12px; margin: 12px 0; }
 .podcast-status { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .podcast-status[data-error="true"] { color: #95472f; }
 .import-label { cursor: pointer; display: inline-flex; align-items: center; }

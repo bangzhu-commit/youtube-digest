@@ -85,6 +85,8 @@ function loadBackgroundHelpers({
     translationQuality: "quick",
   },
   fetchImpl = fetch,
+  nativeImpl = async () => { throw new Error("Unexpected native call"); },
+  initialStorage = {},
   setTimeoutImpl = () => 0,
   clearTimeoutImpl = () => {},
   sidePanel = {
@@ -93,7 +95,7 @@ function loadBackgroundHelpers({
   },
 } = {}) {
   const listeners = { addListener() {} };
-  const localStorage = { ytd_settings: settings };
+  const localStorage = { ytd_settings: settings, ...initialStorage };
   const sandbox = {
     console,
     URL,
@@ -132,6 +134,7 @@ function loadBackgroundHelpers({
         openOptionsPage() {},
         getURL: (resourcePath) => `chrome-extension://test/${resourcePath}`,
         sendMessage: () => Promise.resolve({ success: true }),
+        sendNativeMessage: nativeImpl,
       },
       tabs: { onUpdated: listeners, onActivated: listeners },
     },
@@ -162,6 +165,20 @@ test("native mode retrieves subtitles without sending keys or charging Supadata"
   assert.equal(result.success, true);
   assert.equal(result.source, "youtube-captions");
   assert.equal(calls, 0);
+});
+
+test("website note capture preserves raw subtitles without granting Codex inference", async () => {
+  let nativeCalls = 0;
+  const background = loadBackgroundHelpers({
+    settings: { provider: "codex", aiModel: "gpt-6.1-sol", aiApiKey: "", transcriptProvider: "native" },
+    initialStorage: { digest_ydTeb_I0b94: { transcript: [{ text: "Caption", start: 0 }] } },
+    nativeImpl: async () => { nativeCalls++; throw new Error("Website cannot invoke Codex"); },
+    fetchImpl: async () => { throw new Error("No model request expected"); },
+  });
+  const result = await background.handleSaveNote("ydTeb_I0b94", 0, "Title", "Channel", undefined, false);
+  assert.equal(result.success, true);
+  assert.equal(result.note.text, "Caption");
+  assert.equal(nativeCalls, 0);
 });
 
 test("Supadata prefers existing Chinese captions without generating or translating audio", async () => {
@@ -1157,9 +1174,9 @@ test("translation message watchdog rejects, clears its timer, and ignores late r
   const request = helpers.sendTranslationMessage({
     action: "translateContent",
   });
-  assert.equal(timeoutDelay, 260_000);
+  assert.equal(timeoutDelay, 310_000);
   timeoutCallback();
-  await assert.rejects(request, /timed out after 260 seconds.*Retry/i);
+  await assert.rejects(request, /timed out after 310 seconds.*Retry/i);
   assert.equal(clearCount, 1);
 
   resolveMessage({ success: true });

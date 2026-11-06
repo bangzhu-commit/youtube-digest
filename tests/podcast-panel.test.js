@@ -19,8 +19,8 @@ class Element {
   focus() {}
 }
 
-function panel({ cache = {}, load = async id => loaded(id), write = async () => {}, request = async () => ({}) } = {}) {
-  const elements = new Map(), windowListeners = {};
+function panel({ cache = {}, load = async id => loaded(id), write = async () => {}, request = async () => ({}), nativeRequest = async () => ({ success: true, job: { status: 'idle', progress: 0 } }), config = { provider: 'codex', aiModel: '', hasAiKey: true } } = {}) {
+  const elements = new Map(), windowListeners = {}, timers = new Map(); let timerId = 0;
   const element = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const audioButtons = () => {
     const found = new Set();
@@ -33,17 +33,17 @@ function panel({ cache = {}, load = async id => loaded(id), write = async () => 
   };
   element('annotationEditor').hidden = true;
   const sandbox = {
-    console, URL, Blob, TextEncoder, crypto: { randomUUID, subtle: webcrypto.subtle }, setTimeout: () => 0, clearTimeout() {}, YTD_MEDIA: media, YTD_PODCAST: core, YTD_READING: require('../podcast-reading.js'),
+    console, URL, Blob, TextEncoder, crypto: { randomUUID, subtle: webcrypto.subtle }, setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id; }, clearTimeout: id => timers.delete(id), YTD_MEDIA: media, YTD_PODCAST: core, YTD_READING: require('../podcast-reading.js'),
     document: { getElementById: element, querySelectorAll: selector => selector === '[data-audio-review]' ? audioButtons() : [], createElement: () => new Element(), createTextNode: text => ({ textContent: text }) },
     window: { addEventListener: (name, fn) => windowListeners[name] = fn, close() {} },
     chrome: {
       storage: { local: { get: async key => structuredClone({ [key]: cache[key] }), set: async values => { await write(values); Object.assign(cache, structuredClone(values)); } } },
-      runtime: { sendMessage: async message => message.action === 'podcastNative' ? load(message.request.episodeId) : request(message) },
+      runtime: { sendMessage: async message => message.action === 'podcastNative' ? message.request.action === 'load' ? load(message.request.episodeId) : nativeRequest(message.request) : message.action === 'checkConfig' ? config : request(message) },
       tabs: { query: () => new Promise(() => {}), sendMessage: async () => ({}), onActivated: { addListener() {} }, onUpdated: { addListener() {} } },
     },
   };
   vm.createContext(sandbox); vm.runInContext(source, sandbox);
-  return { sandbox, element, cache, windowListeners, audioButtons, flush: () => vm.runInContext('storageWrites', sandbox) };
+  return { sandbox, element, cache, windowListeners, audioButtons, timers, flush: () => vm.runInContext('storageWrites', sandbox) };
 }
 
 test('audio review becomes clickable after a vault read and recovers after a failed reread', async () => {
@@ -170,3 +170,180 @@ test('a reading quote is linked to the original segment and survives closure unc
   const restored = panel({ cache: p.cache }); await restored.sandbox.initialize(tab(A));
   assert.equal(restored.cache[`podcast_digest_${A}`].annotations[0].readingQuote, '整理后的摘句');
 });
+
+const empty = async () => ({ success: true, found: false, annotations: [] });
+const jobResult = (status, extra = {}) => ({ success: true, job: { status, phase: status === 'running' ? 'transcribing' : status, progress: status === 'completed' ? 1 : 0.25, processedSeconds: 30, duration: 120, ...extra } });
+
+test('an existing API provider is identified with an explicit subscription-switch instruction', async () => {
+  const config = { provider: 'openrouter', aiModel: 'existing-model', hasAiKey: true };
+  const p = panel({ config });
+  await p.sandbox.initialize(tab(A)); await p.sandbox.refreshTextConfig();
+  assert.match(p.element('textModelStatus').textContent, /OpenRouter \/ existing-model/);
+  assert.match(p.element('textModelStatus').textContent, /在设置中选择“本机 Codex（订阅登录）”并保存/);
+  assert.equal(config.provider, 'openrouter');
+  config.provider = 'codex'; config.aiModel = 'subscription-model';
+  await p.sandbox.refreshTextConfig();
+  assert.match(p.element('textModelStatus').textContent, /本机 Codex · 订阅登录/);
+  assert.match(p.element('textModelStatus').textContent, /不需要 API Key/);
+  assert.equal(p.element('refineBtn').disabled, false);
+  assert.equal(p.element('analyzeBtn').disabled, false);
+});
+
+test('whole-episode transcription starts once and failed status polls preserve the running task', async () => {
+  let release, failPoll = false; const calls = [];
+  const p = panel({ load: empty, nativeRequest: message => {
+    calls.push(message);
+    if (message.action === 'transcribeStart') return new Promise(resolve => release = resolve);
+    if (failPoll) throw new Error('连接暂时中断');
+    return jobResult('idle');
+  } });
+  await p.sandbox.initialize(tab(A));
+  assert.equal(p.element('transcribeBtn').disabled, false);
+  const first = p.sandbox.startTranscription();
+  await p.sandbox.startTranscription();
+  assert.equal(calls.filter(call => call.action === 'transcribeStart').length, 1);
+  assert.equal(p.element('transcribeBtn').disabled, true);
+  release(jobResult('running')); await first;
+  assert.equal(p.element('transcriptionProgress').value, 0.25);
+  assert.match(p.element('transcriptionStatus').textContent, /0:30 \/ 2:00/);
+  assert.equal(p.element('cancelTranscribeBtn').hidden, false);
+  assert.match(p.element('status').textContent, /正在生成本集全文/);
+  failPoll = true; await p.sandbox.refreshTranscription();
+  assert.equal(p.element('transcribeBtn').disabled, true);
+  assert.match(p.element('transcriptionStatus').textContent, /后台任务可能仍在运行/);
+  assert.equal(p.timers.size, 1);
+});
+
+test('reopening resumes a durable job and closing the panel does not cancel it', async () => {
+  const calls = [];
+  const p = panel({ load: empty, nativeRequest: async message => { calls.push(message.action); return jobResult('running'); } });
+  await p.sandbox.initialize(tab(A));
+  assert.deepEqual(calls, ['transcribeStatus']);
+  assert.equal(p.element('transcriptionTask').hidden, false);
+  assert.equal(p.timers.size, 1);
+  p.windowListeners.pagehide(); await p.flush();
+  assert.equal(p.timers.size, 0);
+  assert.equal(calls.includes('transcribeCancel'), false);
+});
+
+test('completion loads the complete source while retaining annotation drafts', async () => {
+  let ready = false;
+  const p = panel({ load: async id => ready ? loaded(id) : empty(), nativeRequest: async () => ready ? jobResult('completed', { sourcePath: loaded(A).sourcePath }) : jobResult('running') });
+  await p.sandbox.initialize(tab(A)); ready = true;
+  await p.sandbox.refreshTranscription();
+  assert.equal(p.cache[`podcast_digest_${A}`].transcript.entries[0].text, A + '原话');
+  assert.equal(p.element('transcriptionLabel').textContent, '整集转写完成');
+  assert.equal(p.element('transcribeBtn').disabled, true);
+  assert.equal(p.element('refineBtn').disabled, false);
+});
+
+test('a late transcription completion cannot replace a different episode', async () => {
+  let release, hold = false;
+  const calls = [];
+  const p = panel({ load: async id => id === B ? loaded(B) : empty(), nativeRequest: message => {
+    calls.push(message);
+    if (hold && message.episodeId === A) return new Promise(resolve => release = resolve);
+    return Promise.resolve(jobResult(message.episodeId === A ? 'running' : 'idle'));
+  } });
+  await p.sandbox.initialize(tab(A)); hold = true;
+  const old = p.sandbox.refreshTranscription();
+  await p.sandbox.initialize(tab(B));
+  release(jobResult('completed', { sourcePath: loaded(A).sourcePath })); await old;
+  assert.equal(p.element('podcastTitle').textContent, B);
+  assert.equal(p.element('transcriptionTask').hidden, true);
+  assert.equal(p.cache[`podcast_digest_${B}`].transcript.entries[0].text, B + '原话');
+  assert.equal(calls.some(call => call.action === 'transcribeCancel'), false);
+});
+
+test('transcription completion preserves an imported manuscript until an explicit reload', async () => {
+  let ready = false;
+  const p = panel({ load: async id => ready ? loaded(id) : empty(), nativeRequest: async () => ready ? jobResult('completed', { sourcePath: loaded(A).sourcePath }) : jobResult('running') });
+  await p.sandbox.initialize(tab(A));
+  await p.element('importFile').listeners.change({ target: { value: '', files: [{ name: 'manual.txt', size: 30, text: async () => '我自己整理的全文。' }] } });
+  ready = true; await p.sandbox.refreshTranscription();
+  assert.equal(p.cache[`podcast_digest_${A}`].transcript.entries[0].text, '我自己整理的全文。');
+  assert.match(p.element('transcriptionStatus').textContent, /当前文稿和感想已保留/);
+});
+
+test('cancel preserves progress and enables explicit resume', async () => {
+  const calls = [];
+  const p = panel({ load: empty, nativeRequest: async message => { calls.push(message.action); return jobResult(message.action === 'transcribeCancel' ? 'cancelled' : 'running'); } });
+  await p.sandbox.initialize(tab(A)); await p.sandbox.cancelTranscription();
+  assert.equal(p.element('transcribeBtn').textContent, '继续转写');
+  assert.equal(p.element('transcribeBtn').disabled, false);
+  assert.equal(p.element('cancelTranscribeBtn').hidden, true);
+  assert.match(p.element('status').textContent, /转写已停止/);
+  assert.equal(p.timers.size, 0);
+  await p.sandbox.startTranscription();
+  assert.deepEqual(calls, ['transcribeStatus', 'transcribeCancel', 'transcribeStart']);
+});
+
+test('overview uses the entire manuscript and persists with source identity for export and archival', async () => {
+  const response = loaded(A);
+  response.raw += '\n\n[133:45] 这是节目末尾，不能遗漏。';
+  const calls = []; let archived;
+  const p = panel({ load: async () => response, request: async message => {
+    calls.push(message);
+    return { success: true, provider: 'codex', model: 'account-model', analysis: { chapters: [{ title: '教育与选择', timestampSeconds: 2, summary: '开头讨论。' }, { title: '结尾', timestampSeconds: 8025, summary: '末尾讨论。' }] } };
+  }, nativeRequest: async message => {
+    if (message.action === 'save') { archived = message; return { success: true, sourcePath: response.sourcePath, overviewPath: 'overview.md', savedIds: [], added: 0 }; }
+    return jobResult('idle');
+  } });
+  await p.sandbox.initialize(tab(A)); await p.sandbox.analyze();
+  assert.equal(calls[0].outputLanguage, 'zh-CN');
+  assert.match(calls[0].transcriptText, /133:45.*节目末尾/);
+  const overview = p.cache[`podcast_digest_${A}`].overview;
+  assert.equal(overview.sourceEntryCount, 2);
+  assert.equal(overview.provider, 'codex');
+  assert.equal(overview.chapters.length, 2);
+  assert.match(p.sandbox.overviewMarkdown(), /133:45 结尾/);
+  await p.sandbox.archive();
+  assert.equal(archived.overview.sourceHash, overview.sourceHash);
+  assert.equal(archived.overview.model, 'account-model');
+  const restored = panel({ cache: p.cache, load: async () => response });
+  await restored.sandbox.initialize(tab(A));
+  assert.match(restored.sandbox.overviewMarkdown(), /末尾讨论/);
+  const changed = panel({ cache: p.cache, load: async () => ({ ...response, raw: response.raw + '\n\n[133:50] 新补充。' }) });
+  await changed.sandbox.initialize(tab(A));
+  assert.equal(changed.sandbox.overviewMarkdown(), '');
+});
+
+for (const [flag, notice] of [
+  ['overviewManualEdited', /已有人工修改/],
+  ['overviewInvalid', /数据格式有误/],
+  ['overviewStale', /原稿版本已变化/],
+]) {
+  test(`${flag} clears a same-source cached overview and keeps it out of annotation saves`, async () => {
+    let flagged = false, storedOverview, archived;
+    const p = panel({ load: async () => ({ ...loaded(A), ...(flagged ? { [flag]: true, overview: storedOverview } : {}) }), request: async () => ({ success: true, provider: 'codex', model: 'account-model', analysis: { chapters: [{ title: '原有概览', summary: '这是旧概览。', timestampSeconds: 2 }] } }), nativeRequest: async message => {
+      if (message.action === 'save') { archived = message; return { success: true, sourcePath: loaded(A).sourcePath, savedIds: message.annotations.map(note => note.id), added: message.annotations.length }; }
+      return jobResult('idle');
+    } });
+    await p.sandbox.initialize(tab(A)); await p.sandbox.analyze();
+    storedOverview = p.cache[`podcast_digest_${A}`].overview;
+    assert.match(p.sandbox.overviewMarkdown(), /这是旧概览/);
+    flagged = true; await p.sandbox.loadVault();
+    assert.equal(p.cache[`podcast_digest_${A}`].overview, null);
+    assert.equal(p.element('overview').children.length, 0);
+    assert.equal(p.sandbox.overviewMarkdown(), '');
+    assert.match(p.element('status').textContent, notice);
+    p.sandbox.openEditor(A + '原话', 2, 'p-0');
+    p.element('thoughtInput').value = '概览有变化，但这条感想仍要保存。';
+    await p.sandbox.saveAnnotation(); await p.sandbox.archive();
+    assert.equal(Object.hasOwn(archived, 'overview'), false);
+    assert.equal(archived.annotations.length, 1);
+    assert.equal(p.cache[`podcast_digest_${A}`].annotations[0].saved, true);
+  });
+}
+
+for (const [field, value] of [['title', ''], ['title', '  \n'], ['summary', ''], ['summary', '\t  ']]) {
+  test(`overview rejects ${field} containing ${JSON.stringify(value)} without replacing valid cached content`, async () => {
+    let invalid = false;
+    const p = panel({ request: async () => ({ success: true, provider: 'codex', model: 'account-model', analysis: { chapters: [{ title: '有效标题', summary: '有效概览。', timestampSeconds: 2, ...(invalid ? { [field]: value } : {}) }] } }) });
+    await p.sandbox.initialize(tab(A)); await p.sandbox.analyze();
+    invalid = true; await p.sandbox.analyze();
+    assert.equal(p.cache[`podcast_digest_${A}`].overview.chapters[0].title, '有效标题');
+    assert.equal(p.cache[`podcast_digest_${A}`].overview.chapters[0].summary, '有效概览。');
+    assert.match(p.element('status').textContent, /概览内容为空或格式无效/);
+  });
+}

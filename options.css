@@ -403,3 +403,4 @@ footer {
     padding: 17px;
   }
 }
+[hidden] { display: none !important; }

@@ -84,6 +84,7 @@
           <h2 data-i18n="aiProvider">AI provider</h2>
           <label for="provider" data-i18n="providerLabel">AI service</label>
           <select id="provider" name="provider">
+            <option value="codex" data-i18n="codexProvider">本机 Codex（订阅登录）</option>
             <option value="openrouter">OpenRouter</option>
             <option value="302ai">302.ai</option>
             <option value="deepseek">DeepSeek</option>
@@ -97,9 +98,16 @@
             <option value="quick" data-i18n="quickTranslation">Quick: one pass</option>
           </select>
           <p class="help" data-i18n="translationQualityHelp">Reviewed mode uses two model calls per batch. Quick mode uses one. New translations are cached separately.</p>
+          <div id="apiKeyFields">
           <label for="aiApiKey" data-i18n="aiKeyLabel">AI API key (optional for transcript reading)</label>
           <input id="aiApiKey" name="aiApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your AI provider key" />
           <p class="help"><a id="providerKeysLink" href="https://openrouter.ai/settings/keys" target="_blank" rel="noreferrer" data-i18n="providerKeysLink">Open provider key settings</a></p>
+          </div>
+          <div id="codexFields" hidden>
+            <p class="help" data-i18n="codexHelp">通过本机 Codex CLI 的 ChatGPT 订阅登录处理文字，无需 API Key。模型仍在云端运行；音频转写与原声复核独立。</p>
+            <button id="checkCodexBtn" type="button" data-i18n="checkCodex">检查本机 Codex 状态</button>
+            <p id="codexStatus" class="help" role="status" aria-live="polite"></p>
+          </div>
           <div class="privacy-note" data-i18n="privacyNote">AI features send subtitles and relevant context to the selected service. API keys remain in this Chrome profile.</div>
         </section>
 

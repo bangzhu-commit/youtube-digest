@@ -9,6 +9,12 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "Interface language",
       heading: "Choose subtitles and AI service",
       providerLabel: "AI service", modelLabel: "Model ID",
+      codexProvider: "Local Codex (subscription sign-in)",
+      codexHelp: "Uses the local Codex CLI signed in with ChatGPT for text processing, without an API key. Models still run in the cloud and consume your Codex allowance. Audio transcription and audio review are separate.",
+      checkCodex: "Check local Codex status",
+      codexChecking: "Checking installation and subscription sign-in…",
+      codexReady: "Connected and signed in with ChatGPT. This check did not call a model or measure your remaining allowance.",
+      codexUnavailable: "Could not connect. Install or update the local bridge and sign in to Codex with ChatGPT outside this extension.",
       translationQualityLabel: "Translation quality",
       reviewedTranslation: "Reviewed: translate, compare, revise (default)",
       quickTranslation: "Quick: one pass",
@@ -19,7 +25,7 @@ const YTD_OPTIONS = (() => {
       nativeFallback: "YouTube first, then Supadata (uses credits)", supadataOnly: "Supadata only (uses credits)",
       nativeHelp: "Reads captions or opens YouTube's own transcript panel. No speech transcription. Direct reading may fail after YouTube changes.",
       lede:
-        "Local version: YouTube captions need no API key. OpenRouter, 302.ai and DeepSeek are supported. Keys stay in this Chrome profile; there is no developer server.",
+        "YouTube captions need no API key. Text processing supports local Codex subscription sign-in, OpenRouter, 302.ai and DeepSeek. Existing provider choices are preserved.",
       transcriptProvider: "Transcript provider",
       supadataApiKeyLabel: "Supadata API key (optional)",
       supadataHelp: "Used only if a Supadata mode is selected. Requests consume Supadata credits. ",
@@ -35,7 +41,7 @@ const YTD_OPTIONS = (() => {
       deepseekLink: "Create a DeepSeek API key",
       deepseekHelpSuffix: ".",
       privacyNote:
-        "AI features send subtitles and relevant context only to the selected AI service. Your key is saved locally in Chrome; translation and summaries use your API balance.",
+        "AI features send subtitles and relevant context to the selected service. Local Codex uses your ChatGPT-managed Codex allowance; API providers use their own paid balance. Native audio review requires OpenRouter separately. Codex credentials are never read by this page.",
       saveSettings: "Save settings",
       localRemix: "Local remix",
       customizationTitle: "Want to use another AI model?",
@@ -89,6 +95,12 @@ const YTD_OPTIONS = (() => {
       languageGroupLabel: "界面语言",
       heading: "选择字幕来源与模型平台",
       providerLabel: "模型平台", modelLabel: "模型 ID",
+      codexProvider: "本机 Codex（订阅登录）",
+      codexHelp: "通过本机 Codex CLI 的 ChatGPT 订阅登录处理文字，无需 API Key，消耗 Codex 额度。模型仍在云端运行；音频转写与原声听音复核独立。",
+      checkCodex: "检查本机 Codex 状态",
+      codexChecking: "正在检查安装与订阅登录状态…",
+      codexReady: "已连接，当前通过 ChatGPT 订阅登录。此次检查没有调用模型，也未查询剩余额度。",
+      codexUnavailable: "未连接。请安装或更新本机连接，并在插件之外用 ChatGPT 登录 Codex。",
       translationQualityLabel: "翻译质量",
       reviewedTranslation: "精校：初译、对照审校与修订（默认）",
       quickTranslation: "快速：单次翻译",
@@ -99,7 +111,7 @@ const YTD_OPTIONS = (() => {
       nativeFallback: "优先 YouTube，失败后用 Supadata（消耗额度）", supadataOnly: "仅 Supadata（消耗额度）",
       nativeHelp: "读取原生字幕，必要时打开 YouTube 的文字记录面板；不做语音转录。YouTube 改版或字幕缺失时可能失败。",
       lede:
-        "本地改进版：YouTube 页面字幕无需 API Key。模型支持 OpenRouter、302.ai 和 DeepSeek；密钥仅保存在当前 Chrome 个人资料中。",
+        "YouTube 页面字幕无需 API Key。文字处理支持本机 Codex 订阅登录、OpenRouter、302.ai 和 DeepSeek；已有平台选择会保留。",
       transcriptProvider: "字幕服务",
       supadataApiKeyLabel: "Supadata API Key（可选备用）",
       supadataHelp: "仅在选择 Supadata 或自动备用模式时调用，消耗 Supadata 额度。",
@@ -114,7 +126,7 @@ const YTD_OPTIONS = (() => {
       deepseekLink: "创建 DeepSeek API 密钥",
       deepseekHelpSuffix: "。",
       privacyNote:
-        "中文翻译、概览与解释会把字幕和相关上下文发送给你选定的模型平台，消耗该平台额度。Key 仅保存在 Chrome 本地；不同平台的 Key 分开保存。",
+        "中文翻译、概览与解释会把字幕和相关上下文发送给所选模型。本机 Codex 消耗 ChatGPT 账号的 Codex 额度；API 平台另按各自用量计费。原声听音复核需独立选择 OpenRouter。插件不读取 Codex 登录凭据。",
       saveSettings: "保存设置",
       localRemix: "本地改造",
       customizationTitle: "想使用其他 AI 模型？",
@@ -379,6 +391,10 @@ const YTD_OPTIONS = (() => {
     let previousProvider = settingsApi.DEFAULTS.provider;
     const updateProviderLink = () => {
       doc.getElementById("providerKeysLink").href = settingsApi.PROVIDERS[providerInput.value].keysUrl;
+      const localCodex = providerInput.value === "codex";
+      doc.getElementById("apiKeyFields").hidden = localCodex;
+      doc.getElementById("codexFields").hidden = !localCodex;
+      aiApiKeyInput.disabled = localCodex;
     };
     providerInput.addEventListener("change", () => {
       profiles[previousProvider] = { aiApiKey: aiApiKeyInput.value, aiModel: aiModelInput.value };
@@ -399,6 +415,19 @@ const YTD_OPTIONS = (() => {
     const statusStates = new Map();
     const promptDrafts = createPromptDrafts();
     let currentLanguage = "en";
+
+    doc.getElementById("checkCodexBtn").addEventListener("click", async () => {
+      const button = doc.getElementById("checkCodexBtn");
+      const status = doc.getElementById("codexStatus");
+      button.disabled = true;
+      setStatus(status, "codexChecking");
+      try {
+        const result = await root.chrome?.runtime?.sendMessage({ action: "codexStatus" });
+        setStatus(status, result?.success && result.authenticated ? "codexReady" : "codexUnavailable");
+        if (result?.error) status.textContent += ` ${result.error}`;
+      } catch (_error) { setStatus(status, "codexUnavailable"); }
+      finally { button.disabled = false; }
+    });
 
     function renderStatus(element) {
       const state = statusStates.get(element);

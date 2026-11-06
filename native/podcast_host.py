@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Scoped Obsidian bridge with bounded, offline audio snippets."""
 import base64
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -14,6 +15,9 @@ import subprocess
 import sys
 import tempfile
 import wave
+
+# Native helpers are bundled alongside this host, including when loaded by tests.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HOST_NAME = 'com.youtube_digest.obsidian'
 MAX_BYTES = 950000
@@ -281,20 +285,53 @@ class Vault:
             raise BridgeError('配置的 Obsidian 目录不存在。')
         self.sources = scoped(self.root, self.root / '知识库/原始素材库')
         self.readings = scoped(self.root, self.root / '知识库/阅读工作台')
+        self.source_read_failures = []
+
+    @contextlib.contextmanager
+    def source_lock(self, episode_id):
+        """Serialize same-episode source creation across imports and ASR workers.
+
+        Native saves may already hold their global host lock. Workers acquire
+        only this episode lock, never that global lock, avoiding a lock cycle.
+        """
+        if not isinstance(episode_id, str) or not EPISODE_RE.fullmatch(episode_id):
+            raise BridgeError('节目编号无效。')
+        folder = scoped(self.root, self.sources / '_attachments/xiaoyuzhou' / episode_id)
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / 'source-publish.lock'
+        if path.is_symlink():
+            raise BridgeError('原稿锁文件是符号链接，已拒绝写入。')
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
 
     def source(self, episode_id):
-        url = 'https://www.xiaoyuzhoufm.com/episode/' + episode_id
         matches = []
+        self.source_read_failures = []
         # Only this material directory, never arbitrary vault files or attachments.
-        for path in sorted(self.sources.glob('*.md')):
+        # Prefer explicit generated/imported filenames, but still inspect every
+        # readable legacy source so a second full transcript remains a conflict.
+        generated = f'小宇宙-{episode_id}-转写全文.md'
+        candidates = sorted(self.sources.glob('*.md'), key=lambda path: (
+            0 if path.name == generated else 1 if episode_id in path.name else 2, path.name))
+        for path in candidates:
             path = scoped(self.root, path)
-            with path.open(encoding='utf-8') as handle:
-                head = handle.read(20000)
+            try:
+                with path.open(encoding='utf-8') as handle:
+                    head = handle.read(20000)
+            except (OSError, UnicodeError):
+                self.source_read_failures.append(path.name)
+                continue
             if re.search(r'https://(?:www\.)?xiaoyuzhoufm\.com/episode/' + episode_id + r'(?![a-f0-9])', head):
                 if re.search(r'^##\s+(?:转写全文|逐字稿|全文|Transcript)\s*$', head, re.M | re.I):
                     matches.append(path)
         if len(matches) > 1:
             raise BridgeError('素材库里有多个同集全文，请先确认要使用的原始稿。')
+        if not matches and self.source_read_failures:
+            raise BridgeError(f'素材库扫描不完整：有 {len(self.source_read_failures)} 个文稿暂时无法读取，尚不能确认本集没有全文；请等待云盘就绪后重试。')
         return matches[0] if matches else None
 
     def reading(self, episode_id):
@@ -304,6 +341,93 @@ class Vault:
         document = scoped(self.root, self.readings / f'小宇宙-{episode_id}-精校阅读版.md')
         data = scoped(self.root, self.readings / '_attachments/xiaoyuzhou' / episode_id / 'reading-v1.json')
         return document, data
+
+    def overview_paths(self, episode_id):
+        document = scoped(self.root, self.readings / f'小宇宙-{episode_id}-AI概览.md')
+        data = scoped(self.root, self.readings / '_attachments/xiaoyuzhou' / episode_id / 'overview-v1.json')
+        return document, data
+
+    def load_overview(self, episode_id, result, canonical):
+        document, data = self.overview_paths(episode_id)
+        if not data.exists():
+            return
+        try:
+            stored = json.loads(read_text(data))
+            if not isinstance(stored, dict) or stored.get('version') != 'podcast-overview-v1':
+                raise ValueError('invalid overview')
+            if not document.is_file() or stored.get('artifactHash') != hashlib.sha256(document.read_bytes()).hexdigest():
+                result['overviewManualEdited'] = True
+                return
+            if stored.get('sourceHash') != hashlib.sha256(canonical.encode()).hexdigest():
+                result['overviewStale'] = True
+                return
+            if stored.get('sourceInputHash'):
+                imported = scoped(self.root, self.sources / '_attachments/xiaoyuzhou' / episode_id / 'digest-import-original.txt')
+                original = read_text(imported) if imported.is_file() else ''
+                if stored['sourceInputHash'] != hashlib.sha256(original.encode()).hexdigest():
+                    result['overviewStale'] = True
+                    return
+                result['raw'] = original
+                stored = dict(stored, sourceHash=stored['sourceInputHash'])
+            result['overview'] = stored
+        except (ValueError, UnicodeError, KeyError):
+            result['overviewInvalid'] = True
+
+    def save_overview(self, episode_id, title, raw, source, overview):
+        if (not isinstance(overview, dict) or overview.get('version') != 'podcast-overview-v1'
+                or overview.get('sourceHash') != hashlib.sha256(raw.encode()).hexdigest()):
+            raise BridgeError('概览与原稿版本不一致，请重新生成。')
+        canonical = read_text(source)
+        if canonical != raw:
+            imported = scoped(self.root, self.sources / '_attachments/xiaoyuzhou' / episode_id / 'digest-import-original.txt')
+            if not imported.is_file() or read_text(imported) != raw:
+                raise BridgeError('概览原稿与已保存的素材不一致。')
+        count = overview.get('sourceEntryCount')
+        if type(count) is not int or count != len(source_entries(raw)) or count <= 0:
+            raise BridgeError('概览覆盖段落数与全文不一致。')
+        chapters = overview.get('chapters')
+        if not isinstance(chapters, list) or not 1 <= len(chapters) <= 100:
+            raise BridgeError('概览章节格式无效。')
+        checked, last = [], -1
+        for chapter in chapters:
+            if not isinstance(chapter, dict):
+                raise BridgeError('概览章节格式无效。')
+            start = chapter.get('timestampSeconds')
+            if type(start) not in (int, float) or not math.isfinite(start) or not 0 <= start <= 604800 or start < last:
+                raise BridgeError('概览时间戳无效或顺序错误。')
+            heading, summary = text(chapter.get('title'), 500), text(chapter.get('summary'), 20000)
+            if not heading.strip() or not summary.strip():
+                raise BridgeError('概览章节内容为空。')
+            checked.append(dict(title=heading, summary=summary, timestampSeconds=start))
+            last = start
+        provider, model = text(overview.get('provider'), 80), text(overview.get('model'), 200)
+        if provider not in {'codex', 'openrouter', '302ai', 'deepseek'} or not model.strip() or re.search(r'[\x00-\x1f]', model):
+            raise BridgeError('概览模型记录无效。')
+        generated = checked_date(overview.get('generatedAt'))
+        document, data = self.overview_paths(episode_id)
+        if document.exists():
+            try:
+                previous = json.loads(read_text(data)) if data.exists() else {}
+            except ValueError as error:
+                raise BridgeError('概览记录损坏，已保留原文件。') from error
+            if not isinstance(previous, dict) or previous.get('artifactHash') != hashlib.sha256(document.read_bytes()).hexdigest():
+                raise BridgeError('概览已在 Obsidian 中人工修改，已保留原文件。')
+        relative = source.relative_to(self.root).as_posix()
+        content = (f'# {safe_name(title)}｜AI 概览\n\n原始素材：[[{relative}]]\n\n'
+                   f'> 根据全文 {count} 段生成；模型：{provider} / {model}；生成时间：{generated}。'
+                   '基于机器转写，尚未逐句人工听校；摘要及引用请核对原稿与音频。\n\n')
+        content += '\n\n'.join(f"## {stamp(item['timestampSeconds'])} {item['title'].replace(chr(10), ' ')}\n\n{item['summary']}" for item in checked) + '\n'
+        stored = dict(version='podcast-overview-v1', sourceHash=hashlib.sha256(canonical.encode()).hexdigest(),
+                      chapters=checked, provider=provider, model=model, generatedAt=generated, sourceEntryCount=count,
+                      artifactHash=hashlib.sha256(content.encode()).hexdigest())
+        if raw != canonical:
+            stored['sourceInputHash'] = hashlib.sha256(raw.encode()).hexdigest()
+        serialized = json.dumps(stored, ensure_ascii=False, indent=2)
+        if max(len(content.encode()), len(serialized.encode())) > MAX_BYTES:
+            raise BridgeError('概览过大，未保存。')
+        atomic_write(document, content)
+        atomic_write(data, serialized)
+        return document.relative_to(self.root).as_posix()
 
     def load(self, episode_id):
         source = self.source(episode_id)
@@ -316,6 +440,10 @@ class Vault:
         result = dict(success=True, found=True, raw=raw, format='md',
                     title=title[1] if title else source.stem,
                     sourcePath=source.relative_to(self.root).as_posix(), annotations=annotations)
+        if self.source_read_failures:
+            result['sourceScanIncomplete'] = True
+            result['sourceReadFailures'] = self.source_read_failures[:3]
+        self.load_overview(episode_id, result, raw)
         document, data = self.refined_paths(episode_id)
         if data.exists():
             try:
@@ -484,6 +612,10 @@ class Vault:
         notes = [checked_note(item) for item in annotations]
         if len({item['id'] for item in notes}) != len(notes):
             raise BridgeError('批注编号重复。')
+        with self.source_lock(episode_id):
+            return self._save_locked(episode_id, message, title, raw, body, notes)
+
+    def _save_locked(self, episode_id, message, title, raw, body, notes):
         source = self.source(episode_id)
         if source and read_text(source) != raw:
             imported = scoped(self.root, self.sources / '_attachments/xiaoyuzhou' / episode_id / 'digest-import-original.txt')
@@ -524,12 +656,18 @@ class Vault:
         refined_path = None
         if message.get('reading'):
             refined_path = self.save_refined(episode_id, title, raw, source, message['reading'])
-        return dict(success=True, sourcePath=relative, readingPath=reading.relative_to(self.root).as_posix(), refinedPath=refined_path,
+        overview_path = None
+        if message.get('overview'):
+            overview_path = self.save_overview(episode_id, title, raw, source, message['overview'])
+        return dict(success=True, sourcePath=relative, readingPath=reading.relative_to(self.root).as_posix(), refinedPath=refined_path, overviewPath=overview_path,
                     added=len(additions), savedIds=[note['id'] for note in notes])
 
     def handle(self, message):
         if not isinstance(message, dict):
             raise BridgeError('请求格式无效。')
+        if message.get('action') in {'codexComplete', 'codexStatus'}:
+            import codex_bridge
+            return codex_bridge.handle(self.config, message)
         episode_id = message.get('episodeId', '')
         if not isinstance(episode_id, str) or not EPISODE_RE.fullmatch(episode_id):
             raise BridgeError('节目编号无效。')
@@ -539,6 +677,9 @@ class Vault:
             return self.save(episode_id, message)
         if message.get('action') == 'audioClip':
             return self.audio_clip(episode_id, message)
+        if message.get('action') in {'transcribeStart', 'transcribeStatus', 'transcribeCancel'}:
+            import transcription_jobs
+            return transcription_jobs.handle(self.config, message)
         raise BridgeError('不支持的操作。')
 
 
@@ -568,10 +709,15 @@ def serve(config_path, input_stream=None, output_stream=None):
             if length > MAX_BYTES:
                 raise BridgeError('请求过大，请分段保存。')
             message = json.loads(read_exact(incoming, length))
-            # Serialize writes across Chrome's one-process-per-message native hosts.
-            with open(str(config_path) + '.lock', 'a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
+            # Long Codex work and independently locked ASR jobs must not block reads.
+            if isinstance(message, dict) and message.get('action') in {
+                    'codexComplete', 'codexStatus', 'transcribeStart', 'transcribeStatus', 'transcribeCancel'}:
                 result = vault.handle(message)
+            else:
+                # Serialize source/annotation writes across one-process-per-message hosts.
+                with open(str(config_path) + '.lock', 'a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    result = vault.handle(message)
         except (ValueError, OSError, KeyError) as error:
             result = dict(success=False, error=str(error))
         encoded = json.dumps(result, ensure_ascii=False, allow_nan=False).encode()

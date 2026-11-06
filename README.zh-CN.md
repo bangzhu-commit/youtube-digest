@@ -8,7 +8,7 @@
 
 - 默认直接读取当前 YouTube 页面的字幕，无需 Supadata Key。借鉴 Obsidian Web Clipper 使用的 Defuddle 0.19.4，兼容新旧文字记录面板、JSON3/XML 字幕，并在原地址失效时向 YouTube 播放器接口请求新字幕地址；必要时打开自带文字记录面板。
 - Supadata 改为可选备用。可选“直接读取”“直接读取失败后用 Supadata”“仅 Supadata”。只有主动选择备用或 Supadata 模式才会消耗其额度。
-- 模型平台支持 OpenRouter（默认）、302.ai 和 DeepSeek，模型 ID 可编辑；不同平台的 Key 分开保存，切换时不混用。
+- 文字模型支持本机 Codex（新安装默认，使用订阅登录）、OpenRouter、302.ai 和 DeepSeek，模型 ID 可编辑；升级保留已有平台选择，不同平台的 Key 分开保存，切换时不混用。
 - 原文字幕无需模型 Key。中文翻译、概览、解释与润色才调用选定的模型平台。
 - 保留原版侧栏、双语对照、时间戳跳转、搜索和本地缓存。
 - 小宇宙单集页使用中文阅读侧栏：读取已有全文、搜索、回听、按原句批注、恢复未提交感想，并归档到 Obsidian。
@@ -17,9 +17,13 @@
 
 在小宇宙单集页点击插件图标，即可打开阅读侧栏。优先读取 Obsidian `知识库/原始素材库` 中链接到这一集且含“转写全文”标题的 Markdown；也支持导入 Markdown、TXT、SRT、VTT 和分段 JSON。网页中只有明确的全文文本才会被读取，节目简介和转写文件引用不算全文。读取和批注无需模型 Key；精校、概览、解释只在点击对应按钮后调用配置的模型。
 
+点击“整集转写”，插件会下载当前公开单集的音频，用本机已缓存的 faster-whisper medium 转写完整节目，并保留时间戳。任务保存进度，关闭侧栏后继续；取消后可从检查点继续。已有原稿和人工修改不会被覆盖。音频、识别检查点和最终 Markdown 保存在所选 Vault；本地转写不消耗语音 API 额度。需要已安装的 FFmpeg、faster-whisper 与 medium 模型缓存，缺失时会提示，不自动安装。下载仅支持已允许的小宇宙公开媒体域。
+
+在设置中选择“本机 Codex（订阅登录）”，检查连接后保存，即可用现有 Codex 登录做精校、摘要、解释和翻译。桥接调用 `codex exec`，要求 ChatGPT 登录，不会在失败后自动改用 API Key。额度按该账户的 Codex 订阅计算；“本机”指客户端，文字仍发送到 OpenAI 云端处理。浏览器不读取账户凭证；未登录时需手动登录。文字精校不会被标记为听过原声。
+
 默认显示“精校阅读版”。先选“开头试读”，处理时间戳起点在前 5 分钟内的段落（长段落可能延伸），再选“继续精校全文”：每批先去空口癖、整理断句，再独立对照原稿审校，保留观点、例子、数字、条件和不确定性。不把文字润色当作听音纠错；疑似错词保留并标记。进度逐批保存，中断后可接着生成；待处理段落明确显示原稿。可以切回“原始转写”或展开段落原稿对照。
 
-疑难段落的“听音复核”先用已安装且缓存了 medium 模型的 faster-whisper 本地识别，再经 OpenRouter 向所选 Gemini 音频模型发送最多 90 秒 MP3，最后用当前文字模型对照审校。它只读取 `知识库/原始素材库/_attachments/xiaoyuzhou/节目ID/source.mp3`；不自动下载音频、安装依赖或模型。需要本地 FFmpeg 与 faster-whisper，并重新运行下方安装器登记 FFmpeg。云端听音需 OpenRouter Key，费用按平台用量计算；不会切换你设置中的文字模型。复核保存两份听音候选、覆盖区间与疑点，超出窗口的内容仍需回听。
+疑难段落的“听音复核”先用已缓存 medium 模型的 faster-whisper 本地识别，再经 OpenRouter 向所选 Gemini 音频模型发送最多 90 秒 MP3，最后用当前文字模型对照审校。它只读取 `知识库/原始素材库/_attachments/xiaoyuzhou/节目ID/source.mp3`；整集转写会保存此音频，听音复核本身不下载。需要已安装的 FFmpeg、faster-whisper 与模型缓存。云端听音另需 OpenRouter Key，费用与 Codex 订阅分开计算。复核保存两份听音候选、覆盖区间与疑点，超出窗口的内容仍需回听。
 
 选中原句，或点击段落旁“批注”，输入自己的感想并保存草稿。草稿按节目 ID 保存在当前 Chrome 本地，关闭侧栏后可恢复。点击“保存到 Obsidian”会创建 `知识库/阅读工作台/小宇宙-节目ID-阅读批注.md`，嵌入原始素材并附上原句、时间戳和感想。已存在的原始稿不会被覆盖；重复保存同一批注不会重复追加。已有批注被手动修改时，以 Obsidian 内容为准；遇到冲突会提示重新读取。首次导入的文稿还会保留原文件文本附件。连接不可用时仍可导入全文、写草稿和导出 Markdown。
 
@@ -33,15 +37,17 @@
 python3 native/install_host.py --extension-id YOUR_EXTENSION_ID --vault "/path/to/your/vault"
 ```
 
-安装器仅登记这个扩展 ID、选定 Vault 与本地 FFmpeg 路径；桥接程序只接受节目范围内的读取、归档与音频切片。听音操作执行固定参数的 FFmpeg 和本地 Whisper worker，不提供任意文件路径、命令或网络接口，模型仅从本地缓存读取。配置位于用户的 Application Support 目录，不进入源码或安装包。源码目录需要长期保留。其他系统需要显式提供 `--config-dir` 和 `--host-dir`，尚未做浏览器实测。
+安装器仅登记这个扩展 ID、选定 Vault 与本地 FFmpeg/Codex 路径；桥接接受节目范围内的读取、归档、转写任务、音频切片及有长度和时间限制的 Codex 文字请求。音频处理执行固定参数的 FFmpeg 和本地 Whisper，不提供任意文件路径、Shell 命令或 URL 接口，模型仅从本地缓存读取。配置位于用户的 Application Support 目录，不进入源码或安装包。源码目录需要长期保留。其他系统需要显式提供 `--config-dir` 和 `--host-dir`，尚未做浏览器实测。
 
-升级后请重新加载扩展，再刷新小宇宙页面。v1.4.0 沿用 v1.3.0 的权限。网页回听依赖当前页的音频播放器；播放器尚未加载时需先在节目页点击播放。
+升级后请重新运行安装器、重新加载扩展，再刷新小宇宙页面。v1.5.0 沿用已有浏览器权限。网页回听依赖当前页的音频播放器；播放器尚未加载时需先在节目页点击播放。
 
 ## 安装与配置
 
 长期保留此源代码文件夹。在 Chrome 打开 `chrome://extensions`，开启“开发者模式”，点击“加载已解压的扩展程序”，选择含 `manifest.json` 的这个文件夹。移动或删除文件夹会使扩展失效。此副本不会自动更新；改代码后点“重新加载”，再刷新 YouTube。
 
-在插件 Settings 中选择 OpenRouter，直接在那里输入自己的 Key，不要发到聊天或写入源码。默认模型 ID 为 `deepseek/deepseek-v4-flash`，可替换为该平台可用且支持 JSON 输出的文字聊天模型。保存设置不调用模型。OpenRouter 的默认 DeepSeek V4 Flash 使用该平台的 `reasoning.enabled=false` 关闭思考，以减少翻译和摘要的等待时间；其他模型不追加此参数。302.ai 使用自己的模型 ID，预设为 `gpt-4o-mini`。DeepSeek 专用的非思考参数和空 JSON 重试只用于 DeepSeek。
+在插件 Settings 中选择本机 Codex 即可使用已有 ChatGPT 订阅登录；默认模型 ID 为 `gpt-6.1-sol`，可改为账户可用的模型，需要 Codex CLI 0.166.0 或更新版本。升级保留已有平台选择，需要时手动切换。若选择 OpenRouter，则在设置中输入该平台 Key，不要发到聊天或写入源码；其预设为 `deepseek/deepseek-v4-flash`。保存设置不调用模型。该 OpenRouter 预设使用 `reasoning.enabled=false` 减少等待；其他模型不追加此参数。302.ai 预设为 `gpt-4o-mini`；DeepSeek 专用参数和空 JSON 重试仍只用于 DeepSeek。
+
+若本机系统代理使用 Fake-IP DNS，可显式给安装器加 `--allow-fake-ip-dns`；用 `--no-allow-fake-ip-dns` 关闭。兼容仅允许固定小宇宙 HTTPS 下载域使用 benchmark 地址段，仍验证证书，不开放任意内网地址。
 
 字幕默认选“直接读取 YouTube 页面”。此模式完全不调用 Supadata。需要备用时自行选择相应模式并输入 Supadata Key；其请求限定 `mode=native`，不会自动购买语音转录。实际费用看各平台实时价格和用量。
 
@@ -53,7 +59,7 @@ python3 native/install_host.py --extension-id YOUR_EXTENSION_ID --vault "/path/t
 
 ## 支持范围与验收
 
-支持 Chrome 116+、带原生字幕的普通公开 `youtube.com/watch` 页面。播放器备用请求在当前 YouTube 页面的 MAIN world 同源执行，不新增代理或浏览器权限，不需要 Defuddle 云服务或 API Key。YouTube 页面与字幕接口仍可能变化；全部原生路径失败时可刷新重试，或选择 Supadata 备用。无字幕视频需要额外语音转录，本版没有实现。Shorts、直播和受限视频未验证。
+支持 Chrome 116+、带原生字幕的普通公开 `youtube.com/watch` 页面。播放器备用请求在当前 YouTube 页面的 MAIN world 同源执行，不新增代理或浏览器权限，不需要 Defuddle 云服务或 API Key。YouTube 页面与字幕接口仍可能变化；全部原生路径失败时可刷新重试，或选择 Supadata 备用。YouTube 无字幕视频仍需额外语音转录；本版整集本地转写仅用于支持的小宇宙公开单集。Shorts、直播和受限视频未验证。
 
 验证命令：`npm test`、`npm run check`、`npm run package`。测试通过只能说明本地逻辑通过；真实 Key、额度、视频页面仍要实测。安装后用真实视频检查字幕、时间戳跳转和双语翻译。
 

@@ -6,6 +6,9 @@ let sourcePath = "", busy = false, activeView = "transcript";
 let editorDraft = null, storageWrites = Promise.resolve(), draftSaveTimer;
 let savingAnnotation = false;
 let reading = null, readMode = "reading", stopRefine = false, refining = false;
+let overview = null;
+let transcriptionJob = null, transcriptionTimer, transcriptionPending = false, transcriptionReadPending = false;
+let transcriptionNotice = "", panelClosed = false;
 const key = id => `podcast_digest_${id}`;
 function status(message, error = false) { $("status").textContent = message; $("status").dataset.error = String(error); }
 function button(label, onClick, className = "enhance-btn") {
@@ -22,6 +25,10 @@ function controls() {
   $("stopRefineBtn").hidden = !refining;
   $("stopRefineBtn").disabled = stopRefine;
   $("refineScope").disabled = busy; $("audioModel").disabled = busy;
+  $("transcribeBtn").disabled = !episode || busy || transcriptionPending || transcriptionJob?.status === "running" || !!transcript;
+  $("transcribeBtn").textContent = ["failed", "cancelled"].includes(transcriptionJob?.status) ? "继续转写" : "转写整集";
+  $("cancelTranscribeBtn").hidden = transcriptionJob?.status !== "running";
+  $("cancelTranscribeBtn").disabled = transcriptionPending;
   document.querySelectorAll("[data-audio-review]").forEach(element => { element.disabled = busy; });
 }
 function view(name) {
@@ -35,13 +42,13 @@ async function persist(id = episode?.id, value = snapshot()) {
   storageWrites = write;
   await write;
 }
-function snapshot() { return { transcript, annotations, title, channel, sourcePath, editorDraft, reading, readMode, audioModel: $("audioModel").value }; }
+function snapshot() { return { transcript, annotations, title, channel, sourcePath, editorDraft, reading, overview, readMode, audioModel: $("audioModel").value }; }
 function readingItem(entry) { return reading?.items.find(item => item.id === entry.id); }
 function displayText(entry) { return readMode === "reading" ? readingItem(entry)?.text || entry.text : entry.text; }
 function coverage() {
   const total = transcript?.entries.filter(YTD_READING.eligible).length || 0;
   const count = reading?.items.length || 0;
-  $("readingStatus").textContent = total ? `已精校 ${count}/${total} 段。${count < total ? "待处理段落显示原稿；可继续生成。" : "文字精校完成。"}未标记听音的段落只做了文字审校。` : "先读取或导入全文，再生成精校阅读版。";
+  $("readingStatus").textContent = total ? `已精校 ${count}/${total} 段。${count < total ? "待处理段落显示原稿；可继续生成。" : "文字精校完成。"}未标记听音的段落只做了文字审校。` : "先转写整集、读取或导入全文，再生成精校阅读版。";
 }
 function mergeNotes(local, stored) {
   const notes = new Map(local.map(note => [note.id, note]));
@@ -50,6 +57,102 @@ function mergeNotes(local, stored) {
 }
 async function native(action, data = {}) {
   return chrome.runtime.sendMessage({ action: "podcastNative", request: { action, episodeId: episode.id, ...data } });
+}
+function validTranscriptionJob(value) {
+  if (!value || !["idle", "running", "completed", "failed", "cancelled"].includes(value.status)) throw new Error("转写任务状态无效，请重新读取。");
+  return { ...value, progress: Number.isFinite(value.progress) ? Math.max(0, Math.min(1, value.progress)) : 0 };
+}
+function renderTranscription() {
+  const job = transcriptionJob;
+  $("transcriptionTask").hidden = (!job || job.status === "idle") && !transcriptionNotice;
+  $("transcriptionProgress").value = job?.progress || 0;
+  $("transcriptionProgress").hidden = !job || !["running", "completed"].includes(job.status);
+  const labels = { queued: "准备转写", download: "正在下载本集音频", preparing: "正在准备本地音频", transcribing: "正在转写整集", completed: "整集转写完成", cancelled: "转写已停止", failed: "转写未完成" };
+  $("transcriptionLabel").textContent = labels[job?.phase] || labels[job?.status] || "本地转写";
+  const progress = job?.duration > 0 && job?.processedSeconds >= 0 ? `已处理 ${YTD_PODCAST.stamp(job.processedSeconds)} / ${YTD_PODCAST.stamp(job.duration)}。` : "";
+  const detail = transcriptionNotice || job?.error || job?.message || (job?.status === "running" ? "关闭侧栏后仍会继续，重新打开可查看进度。" : job?.status === "cancelled" ? "已完成的进度保留，可点击“继续转写”。" : job?.status === "completed" ? "原始转写与音频已保存在素材库。" : "");
+  $("transcriptionStatus").textContent = progress + detail;
+  $("transcriptionStatus").dataset.error = String(job?.status === "failed");
+  if (!transcript && !busy && job?.status === "running") status("正在生成本集全文，完成后会自动读取。");
+  if (!transcript && !busy && job?.status === "cancelled") status("转写已停止，已完成进度保留。点击“继续转写”接着处理。");
+  if (!transcript && !busy && job?.status === "failed") status("转写尚未完成，请查看上方原因；解决后可继续转写。", true);
+  $("emptyState").textContent = job?.status === "running" ? "本地 Whisper 正在转写整集音频。关闭侧栏后任务仍会继续；完成后即可精校文字、生成概览和写批注。" : "点击“转写整集”，用本地 Whisper 将本集音频转成带时间戳的全文。长节目需要等待，关闭侧栏后仍会继续。也可以读取素材库或导入已有文稿；节目简介不会作为全文。";
+  controls();
+}
+function pollTranscription(run = generation) {
+  clearTimeout(transcriptionTimer);
+  if (run !== generation || panelClosed || transcriptionJob?.status !== "running") return;
+  transcriptionTimer = setTimeout(() => { void refreshTranscription(); }, 2500);
+}
+async function refreshTranscription() {
+  if (!episode || panelClosed || transcriptionReadPending || transcriptionPending) return;
+  const run = generation, id = episode.id;
+  transcriptionReadPending = true;
+  try {
+    const result = await native("transcribeStatus", { episodeId: id });
+    if (run !== generation || panelClosed) return;
+    if (!result?.success) throw new Error(result?.error || "无法读取转写进度。");
+    transcriptionJob = validTranscriptionJob(result.job); transcriptionNotice = "";
+    renderTranscription();
+    if (transcriptionJob.status === "completed" && (!transcript || sourcePath !== transcriptionJob.sourcePath)) {
+      if (busy || transcript?.origin === "import" || $("thoughtInput").value.trim()) {
+        transcriptionNotice = "全文已保存；当前文稿和感想已保留。完成当前操作后点击“读取素材库”。";
+      } else {
+        await loadVault();
+      }
+      if (run !== generation || panelClosed) return;
+      renderTranscription();
+    }
+  } catch (error) {
+    if (run === generation && !panelClosed) {
+      // A failed poll must not erase a running job or start another one.
+      if (transcriptionJob?.status === "running") {
+        transcriptionNotice = `暂时无法读取进度：${error.message} 后台任务可能仍在运行，稍后自动重试。`;
+        renderTranscription();
+      }
+    }
+  } finally {
+    if (run === generation) { transcriptionReadPending = false; pollTranscription(run); }
+  }
+}
+async function startTranscription() {
+  if (!episode || busy || transcriptionPending || transcriptionJob?.status === "running" || transcript) return;
+  const run = generation, id = episode.id;
+  transcriptionPending = true; transcriptionNotice = "正在启动本地转写…"; renderTranscription();
+  try {
+    const result = await native("transcribeStart", { episodeId: id, title });
+    if (run !== generation || panelClosed) return;
+    if (!result?.success) throw new Error(result?.error || "转写未能启动。");
+    transcriptionJob = validTranscriptionJob(result.job); transcriptionNotice = "";
+  } catch (error) {
+    if (run === generation) { transcriptionNotice = error.message; transcriptionJob = { status: "failed", phase: "failed", progress: 0 }; }
+  } finally {
+    if (run === generation && !panelClosed) {
+      transcriptionPending = false; renderTranscription();
+      if (transcriptionJob?.status === "completed") await refreshTranscription();
+      else pollTranscription(run);
+    }
+  }
+}
+async function cancelTranscription() {
+  if (!episode || transcriptionPending || transcriptionJob?.status !== "running") return;
+  const run = generation, id = episode.id;
+  transcriptionPending = true; transcriptionNotice = "正在停止，已完成的转写进度会保留…"; renderTranscription();
+  try {
+    const result = await native("transcribeCancel", { episodeId: id });
+    if (run !== generation || panelClosed) return;
+    if (!result?.success) throw new Error(result?.error || "停止请求未完成。");
+    transcriptionJob = validTranscriptionJob(result.job); transcriptionNotice = "";
+  } catch (error) { if (run === generation) transcriptionNotice = error.message; }
+  finally { if (run === generation && !panelClosed) { transcriptionPending = false; renderTranscription(); pollTranscription(run); } }
+}
+async function refreshTextConfig() {
+  try {
+    const result = await chrome.runtime.sendMessage({ action: "checkConfig" });
+    if (!result?.provider || panelClosed) return;
+    const label = result.provider === "codex" ? "本机 Codex · 订阅登录" : ({ openrouter: "OpenRouter", "302ai": "302.ai", deepseek: "DeepSeek" })[result.provider] || result.provider;
+    $("textModelStatus").textContent = `文字精校与摘要：${label}${result.aiModel ? ` / ${result.aiModel}` : ""}。${result.provider === "codex" ? "使用现有 Codex 登录，不需要 API Key；仅处理文字。" : "如需使用订阅，请在设置中选择“本机 Codex（订阅登录）”并保存。"}`;
+  } catch {}
 }
 async function seek(seconds) {
   if (seconds === null || !episode) return;
@@ -128,7 +231,25 @@ function renderAnnotations() {
 function render() {
   $("podcastTitle").textContent = title || "小宇宙阅读";
   $("podcastChannel").textContent = channel;
-  renderTranscript(); renderAnnotations(); controls();
+  renderTranscript(); renderAnnotations(); renderOverview(); controls();
+}
+function overviewValid(value) {
+  return value?.version === "podcast-overview-v1" && /^[a-f0-9]{64}$/.test(value.sourceHash || "") && Number.isInteger(value.sourceEntryCount) && value.sourceEntryCount > 0 && Array.isArray(value.chapters) && value.chapters.length > 0 && value.chapters.length <= 100 && value.chapters.every(chapter => chapter && typeof chapter.title === "string" && chapter.title.trim() && chapter.title.length <= 500 && typeof chapter.summary === "string" && chapter.summary.trim() && chapter.summary.length <= 20000 && Number.isFinite(chapter.timestampSeconds) && chapter.timestampSeconds >= 0 && chapter.timestampSeconds <= 604800);
+}
+function renderOverview() {
+  const list = $("overview"); list.replaceChildren();
+  if (!overviewValid(overview)) return;
+  list.append(paragraph(`根据全文 ${overview.sourceEntryCount} 段生成${overview.provider === "codex" ? " · 本机 Codex" : ""}。引用请对照原始转写。`, "overview-coverage"));
+  for (const chapter of overview.chapters) {
+    const section = document.createElement("article"); section.className = "podcast-chapter";
+    section.append(button(YTD_PODCAST.stamp(chapter.timestampSeconds), () => seek(chapter.timestampSeconds), "podcast-time"));
+    const heading = document.createElement("h3"); heading.textContent = chapter.title;
+    section.append(heading, paragraph(chapter.summary)); list.append(section);
+  }
+}
+function overviewMarkdown() {
+  if (!overviewValid(overview)) return "";
+  return `## AI 概览\n\n根据全文 ${overview.sourceEntryCount} 段生成；引用请核对原稿。${overview.model ? `文字模型：${overview.model}。` : ""}\n\n${overview.chapters.map(chapter => `### ${YTD_PODCAST.stamp(chapter.timestampSeconds)} ${chapter.title}\n\n${chapter.summary}`).join("\n\n")}\n\n`;
 }
 function closeEditor() { selected = null; editorDraft = null; $("annotationEditor").hidden = true; $("thoughtInput").value = ""; }
 function openEditor(quote, start, entryId, readingQuote) {
@@ -184,9 +305,15 @@ async function loadVault() {
     const result = await native("load");
     if (run !== generation) return;
     if (!result?.success) throw new Error(result?.error || "本机连接不可用。");
+    const overviewBlocked = result.overviewManualEdited || result.overviewInvalid || result.overviewStale;
+    if (overviewBlocked) overview = null;
     if (result.found) {
       transcript = { ...YTD_PODCAST.parseTranscript(result.raw, result.format), format: result.format, origin: "vault" };
       title = result.title || title; sourcePath = result.sourcePath;
+      const sourceHash = await YTD_READING.fingerprint(transcript.raw);
+      if (run !== generation) return;
+      if (overview?.sourceHash !== sourceHash) overview = null;
+      if (!overview && !overviewBlocked && overviewValid(result.overview) && result.overview.sourceHash === sourceHash) overview = result.overview;
       if (result.readingManualEdited || result.readingInvalid || result.readingStale) reading = null;
       if (!YTD_READING.validReading(reading, transcript)) reading = null;
       if (result.reading && result.reading.sourceHash === await YTD_READING.fingerprint(transcript.raw)) {
@@ -205,7 +332,7 @@ async function loadVault() {
     annotations = mergeNotes(annotations, result.annotations || []);
     await persist();
     if (run !== generation) return;
-    render(); status(result.readingManualEdited ? "Obsidian 阅读版已有人工修改，已保留该文件；侧栏暂显示原稿。" : result.readingInvalid ? "阅读版数据格式有误，已保留文件；侧栏显示原稿，请在 Obsidian 核对。" : result.readingStale ? "原稿版本有变化，旧阅读版未自动套用。" : result.found ? "已读取素材库全文。选中原句即可写感想。" : "素材库里还没有这集全文。可导入已有文稿；本版不自动转写音频。");
+    render(); status(result.readingManualEdited ? "Obsidian 阅读版已有人工修改，已保留该文件；侧栏暂显示原稿。" : result.overviewManualEdited ? "Obsidian 概览已有人工修改，已保留该文件，并清除侧栏旧概览；保存批注不会覆盖它。" : result.overviewInvalid ? "概览数据格式有误，已保留文件并清除侧栏旧概览；请在 Obsidian 核对。" : result.overviewStale ? "概览对应的原稿版本已变化，已清除侧栏旧概览；可根据当前全文重新生成。" : result.readingInvalid ? "阅读版数据格式有误，已保留文件；侧栏显示原稿，请在 Obsidian 核对。" : result.readingStale ? "原稿版本有变化，旧阅读版未自动套用。" : result.found ? "已读取素材库全文。选中原句即可写感想。" : "还没有读取到这集全文。点击“转写整集”生成，或导入已有文稿。");
   } catch (error) {
     if (run === generation) status(`${error.message} 可先导入全文、写批注并导出 Markdown。`, true);
   } finally { if (run === generation) { busy = false; controls(); } }
@@ -216,7 +343,7 @@ async function archive() {
   const run = generation, id = episode.id, captured = snapshot();
   busy = true; controls(); status("正在保存原始素材与阅读批注…");
   try {
-    const result = await native("save", { title, raw: transcript.raw, body: sourceBody(), annotations: annotations.map(YTD_PODCAST.annotation), ...(reading?.items.length ? { reading: { version: reading.version, sourceHash: reading.sourceHash, items: reading.items, total: transcript.entries.filter(YTD_READING.eligible).length } } : {}) });
+    const result = await native("save", { title, raw: transcript.raw, body: sourceBody(), annotations: annotations.map(YTD_PODCAST.annotation), ...(overviewValid(overview) ? { overview } : {}), ...(reading?.items.length ? { reading: { version: reading.version, sourceHash: reading.sourceHash, items: reading.items, total: transcript.entries.filter(YTD_READING.eligible).length } } : {}) });
     if (!result?.success) throw new Error(result?.error || "保存失败，浏览器草稿仍保留。");
     const savedIds = new Set(result.savedIds);
     await storageWrites.catch(() => {});
@@ -225,33 +352,33 @@ async function archive() {
     await persist(id, next);
     if (run !== generation) return;
     sourcePath = next.sourcePath; annotations = next.annotations; render();
-    status(`已保存${result.refinedPath ? "精校阅读版和批注" : "阅读批注"}。新增 ${result.added} 条批注。`);
+    status(`已保存${result.refinedPath ? "精校阅读版和批注" : "阅读批注"}${result.overviewPath ? "及 AI 概览" : ""}。新增 ${result.added} 条批注。`);
   } catch (error) { if (run === generation) status(error.message, true); }
   finally { if (run === generation) { busy = false; controls(); } }
 }
 function download() {
   if (!transcript || !episode) return;
   const refined = reading?.items.length ? `## 精校阅读版（${reading.items.length}/${transcript.entries.filter(YTD_READING.eligible).length} 段）\n\n${transcript.entries.filter(YTD_READING.eligible).map(entry => { const item = readingItem(entry); return `### ${YTD_PODCAST.stamp(entry.start)} ${entry.speaker}\n\n${item?.text || entry.text}\n\n${item ? item.audioEvidence ? "*已复核音频片段*" : "*文字精校*" : "*原稿，待精校*"}${item?.issues.length ? `\n\n疑点：${item.issues.join("；")}` : ""}`; }).join("\n\n")}\n\n` : "";
-  const content = `# ${title}｜阅读与批注\n\n来源：${episode.url}\n\n${refined}## 原文\n\n${sourcePath ? `![[${sourcePath}]]` : sourceBody()}\n\n## 我的批注\n\n${annotations.map(YTD_PODCAST.markdownAnnotation).join("\n")}`;
+  const content = `# ${title}｜阅读与批注\n\n来源：${episode.url}\n\n${overviewMarkdown()}${refined}## 原文\n\n${sourcePath ? `![[${sourcePath}]]` : sourceBody()}\n\n## 我的批注\n\n${annotations.map(YTD_PODCAST.markdownAnnotation).join("\n")}`;
   const url = URL.createObjectURL(new Blob([content], { type: "text/markdown;charset=utf-8" }));
   const link = document.createElement("a"); link.href = url; link.download = `小宇宙-${episode.id}-阅读批注.md`; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 async function analyze() {
   if (!transcript || busy) return;
-  const run = generation;
+  const run = generation, raw = transcript.raw;
   busy = true; controls(); status("正在根据全文生成 AI 概览…");
   try {
-    const result = await chrome.runtime.sendMessage({ action: "analyzeTranscript", transcriptText: transcript.entries.map(entry => `[${YTD_PODCAST.stamp(entry.start)}] ${entry.text}`).join("\n"), videoTitle: title, channelName: channel, videoDuration: Math.max(0, ...transcript.entries.map(entry => entry.start || 0)) });
+    const sourceHash = await YTD_READING.fingerprint(raw);
     if (run !== generation) return;
+    const result = await chrome.runtime.sendMessage({ action: "analyzeTranscript", outputLanguage: "zh-CN", transcriptText: transcript.entries.map(entry => `[${YTD_PODCAST.stamp(entry.start)}] ${entry.text}`).join("\n"), videoTitle: title, channelName: channel, videoDuration: Math.max(transcriptionJob?.duration || 0, ...transcript.entries.map(entry => entry.start || 0)) });
+    if (run !== generation || transcript.raw !== raw) return;
     if (!result?.success) throw new Error(result?.message || result?.error || "概览生成失败。");
-    const list = $("overview"); list.replaceChildren();
-    for (const chapter of result.analysis.chapters || []) {
-      const section = document.createElement("article"); section.className = "podcast-chapter";
-      section.append(button(chapter.timestamp, () => seek(chapter.timestampSeconds), "podcast-time"));
-      const heading = document.createElement("h3"); heading.textContent = chapter.title; section.append(heading, paragraph(chapter.summary)); list.append(section);
-    }
-    status("AI 概览已生成。全文与个人感想保持原样。");
+    const next = { version: "podcast-overview-v1", sourceHash, chapters: (result.analysis?.chapters || []).map(({ title, summary, timestampSeconds }) => ({ title, summary, timestampSeconds })), provider: result.provider || "", model: result.model || "", generatedAt: new Date().toISOString(), sourceEntryCount: transcript.entries.length };
+    if (!overviewValid(next)) throw new Error("概览内容为空或格式无效，未替换已有结果。");
+    overview = next; await persist();
+    if (run !== generation) return;
+    renderOverview(); status("AI 概览已生成并保存在本机。可保存到 Obsidian 或导出 Markdown。");
   } catch (error) { if (run === generation) status(error.message, true); }
   finally { if (run === generation) { busy = false; controls(); } }
 }
@@ -337,17 +464,24 @@ async function initialize(tab) {
   if (media?.platform !== "xiaoyuzhou") { window.close(); return; }
   if (episode?.id === media.id && episodeTabId === tab.id) return;
   if (episode) { clearTimeout(draftSaveTimer); void persist().catch(() => {}); }
+  clearTimeout(transcriptionTimer);
   const run = ++generation;
   episode = media; episodeTabId = tab.id; panelWindowId = tab.windowId; busy = false; refining = false; stopRefine = true;
+  transcriptionJob = null; transcriptionNotice = ""; transcriptionPending = false; transcriptionReadPending = false;
   transcript = null; annotations = []; sourcePath = ""; title = "小宇宙节目"; channel = "";
-  reading = null; readMode = "reading"; $("readMode").value = readMode; $("audioModel").value = YTD_READING.AUDIO_MODELS[0];
-  closeEditor(); $("overview").replaceChildren(); $("searchInput").value = ""; render();
+  reading = null; overview = null; readMode = "reading"; $("readMode").value = readMode; $("audioModel").value = YTD_READING.AUDIO_MODELS[0];
+  closeEditor(); $("overview").replaceChildren(); $("searchInput").value = ""; render(); renderTranscription();
   try {
     const cached = (await chrome.storage.local.get(key(media.id)))[key(media.id)];
     if (run !== generation) return;
     if (cached?.transcript?.raw) {
       transcript = { ...YTD_PODCAST.parseTranscript(cached.transcript.raw, cached.transcript.format), format: cached.transcript.format, origin: cached.transcript.origin };
       if (YTD_READING.validReading(cached.reading, transcript)) reading = cached.reading;
+      if (overviewValid(cached.overview)) {
+        const sourceHash = await YTD_READING.fingerprint(transcript.raw);
+        if (run !== generation) return;
+        if (cached.overview.sourceHash === sourceHash) overview = cached.overview;
+      }
       readMode = cached.readMode === "source" ? "source" : "reading"; $("readMode").value = readMode;
       if (YTD_READING.AUDIO_MODELS.includes(cached.audioModel)) $("audioModel").value = cached.audioModel;
       annotations = (cached.annotations || []).map(note => ({ ...YTD_PODCAST.annotation(note), entryId: note.entryId, saved: !!note.saved }));
@@ -369,10 +503,14 @@ async function initialize(tab) {
       editorDraft = draft; $("thoughtInput").value = draft.thought;
       $("editorStatus").textContent = "已恢复上次未提交的感想。";
     }
+    await refreshTranscription();
+    if (run === generation) void refreshTextConfig();
   } catch (error) { if (run === generation) status(error.message, true); }
 }
 document.querySelectorAll("[data-view]").forEach(element => element.addEventListener("click", () => view(element.dataset.view)));
 $("reloadBtn").addEventListener("click", loadVault);
+$("transcribeBtn").addEventListener("click", startTranscription);
+$("cancelTranscribeBtn").addEventListener("click", cancelTranscription);
 $("archiveBtn").addEventListener("click", archive);
 $("exportBtn").addEventListener("click", download);
 $("analyzeBtn").addEventListener("click", analyze);
@@ -392,7 +530,8 @@ $("thoughtInput").addEventListener("input", () => {
   clearTimeout(draftSaveTimer);
   draftSaveTimer = setTimeout(() => persist(id, captured).catch(error => status(`草稿未保存：${error.message}`, true)), 250);
 });
-window.addEventListener("pagehide", () => { clearTimeout(draftSaveTimer); void persist().catch(() => {}); });
+window.addEventListener("focus", refreshTextConfig);
+window.addEventListener("pagehide", () => { panelClosed = true; clearTimeout(draftSaveTimer); clearTimeout(transcriptionTimer); void persist().catch(() => {}); });
 $("importFile").addEventListener("change", async event => {
   const file = event.target.files[0], run = generation;
   if (!file || !episode) return;
@@ -403,9 +542,9 @@ $("importFile").addEventListener("change", async event => {
     if (run !== generation) return;
     const format = file.name.split(".").at(-1).toLowerCase();
     const next = { ...YTD_PODCAST.parseTranscript(raw, format), format, origin: "import" };
-    await persist(episode.id, { ...snapshot(), transcript: next, sourcePath: "", reading: null });
+    await persist(episode.id, { ...snapshot(), transcript: next, sourcePath: "", reading: null, overview: null });
     if (run !== generation) return;
-    transcript = next; sourcePath = ""; reading = null; closeEditor(); render(); status(`已导入 ${transcript.entries.length} 段全文。`);
+    transcript = next; sourcePath = ""; reading = null; overview = null; closeEditor(); render(); status(`已导入 ${transcript.entries.length} 段全文。`);
   } catch (error) { status(error.message, true); }
   finally { event.target.value = ""; }
 });

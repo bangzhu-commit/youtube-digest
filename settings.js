@@ -7,15 +7,16 @@
 var YTD_SETTINGS = (() => {
   const STORAGE_KEY = "ytd_settings";
   const PROVIDERS = Object.freeze({
+    codex: { name: "本机 Codex（订阅登录）", baseUrl: "", model: "gpt-6.1-sol", keysUrl: "" },
     openrouter: { name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-flash", keysUrl: "https://openrouter.ai/settings/keys" },
     "302ai": { name: "302.ai", baseUrl: "https://api.302.ai/v1", model: "gpt-4o-mini", keysUrl: "https://302.ai/" },
     deepseek: { name: "DeepSeek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash", keysUrl: "https://platform.deepseek.com/api_keys" },
   });
   const DEFAULTS = Object.freeze({
-    provider: "openrouter",
+    provider: "codex",
     aiApiKey: "",
-    aiBaseUrl: PROVIDERS.openrouter.baseUrl,
-    aiModel: PROVIDERS.openrouter.model,
+    aiBaseUrl: PROVIDERS.codex.baseUrl,
+    aiModel: PROVIDERS.codex.model,
     supadataApiKey: "",
     transcriptProvider: "native",
     translationQuality: "reviewed",
@@ -27,12 +28,14 @@ var YTD_SETTINGS = (() => {
 
   function normalize(input = {}) {
     input = input || {};
-    const provider = Object.hasOwn(PROVIDERS, input.provider) ? input.provider : DEFAULTS.provider;
+    // Preserve older key-bearing profiles which predate the provider field.
+    const provider = Object.hasOwn(PROVIDERS, input.provider) ? input.provider
+      : !input.provider && typeof input.aiApiKey === "string" && input.aiApiKey.trim() ? "openrouter" : DEFAULTS.provider;
     const preset = PROVIDERS[provider];
     const knownProvider = !input.provider || Object.hasOwn(PROVIDERS, input.provider);
     return {
       provider,
-      aiApiKey: !knownProvider
+      aiApiKey: provider === "codex" || !knownProvider
         ? ""
         : typeof input.aiApiKey === "string"
           ? input.aiApiKey.trim()
@@ -58,6 +61,7 @@ var YTD_SETTINGS = (() => {
   }
 
   function chatCompletionsUrl(input = DEFAULTS) {
+    if (normalize(input).provider === "codex") throw new Error("Codex uses the local subscription bridge, not an API endpoint.");
     return `${normalize(input).aiBaseUrl}/chat/completions`;
   }
 

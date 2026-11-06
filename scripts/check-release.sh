@@ -39,6 +39,8 @@ public_allowlist=(
   "native/podcast_host.py"
   "native/install_host.py"
   "native/local_whisper.py"
+  "native/transcription_jobs.py"
+  "native/codex_bridge.py"
   "content.js"
   "sidepanel.html"
   "sidepanel.css"
@@ -66,6 +68,8 @@ required_public_files=(
   "podcast-reading.js"
   "prompts/podcast-reading.md"
   "native/local_whisper.py"
+  "native/transcription_jobs.py"
+  "native/codex_bridge.py"
   "media-platform.js"
   "podcast-core.js"
   "podcast-content.js"
@@ -257,7 +261,7 @@ if compgen -G "tests/*.test.js" >/dev/null; then
   node --test tests/*.test.js
 fi
 
-python3 -m unittest discover -s tests -p 'test_podcast_host.py'
+python3 -m unittest discover -s tests -p 'test_*.py'
 
 if ((${#javascript_files[@]} > 0)); then
   if grep -En \

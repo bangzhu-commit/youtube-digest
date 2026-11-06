@@ -2,12 +2,21 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const settings = require("../settings.js");
 
-test("new profiles default to OpenRouter and native captions without keys", () => {
+test("new profiles default to subscription Codex and native captions without keys", () => {
   const value = settings.normalize();
-  assert.equal(value.provider, "openrouter");
+  assert.equal(value.provider, "codex");
   assert.equal(value.transcriptProvider, "native");
   assert.equal(value.aiApiKey, "");
   assert.equal(value.supadataApiKey, "");
+});
+
+test("Codex never retains a provider API key and existing choices are not migrated", () => {
+  const local = settings.normalize({ provider: "codex", aiApiKey: "old-key", aiModel: "gpt-6.1-sol" });
+  assert.equal(local.aiApiKey, "");
+  assert.equal(local.aiBaseUrl, "");
+  assert.throws(() => settings.chatCompletionsUrl(local), /local subscription bridge/);
+  assert.equal(settings.normalize({ provider: "openrouter", aiApiKey: "old-key" }).provider, "openrouter");
+  assert.equal(settings.normalize({ aiApiKey: "legacy-key" }).provider, "openrouter");
 });
 
 test("provider endpoints cannot redirect a key to custom origins", () => {

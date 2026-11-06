@@ -43,7 +43,7 @@ test('cached reading is invalidated by source changes, duplicate IDs or malforme
 function background({ provider = 'openrouter', native = async () => ({ success: true, audio: 'YXVkaW8=', localText: segments[0].text, localModel: 'faster-whisper/medium/int8', start: 0, end: 40 }), responses = [polished, polished] } = {}) {
   const calls = [], nativeCalls = [], listeners = { addListener() {} };
   let listener;
-  const settings = { provider, aiApiKey: 'test-key', aiBaseUrl: 'https://openrouter.ai/api/v1', aiModel: 'text-model' };
+  const settings = { provider, aiApiKey: provider === 'codex' ? '' : 'test-key', aiBaseUrl: 'https://openrouter.ai/api/v1', aiModel: provider === 'codex' ? 'gpt-6.1-sol' : 'text-model' };
   const root = path.join(__dirname, '..');
   const sandbox = {
     console, URL, TextEncoder, TextDecoder, AbortController, setTimeout: () => 0, clearTimeout() {}, importScripts() {},
@@ -100,4 +100,44 @@ test('website and content-script senders cannot trigger model or local audio pro
   const b = background();
   const result = await b.invoke({ action: 'podcastListen', segments }, { id: 'test', url: 'https://www.xiaoyuzhoufm.com/episode/' + 'a'.repeat(24) });
   assert.equal(result.success, false); assert.equal(b.calls.length, 0); assert.equal(b.nativeCalls.length, 0);
+});
+
+test('Codex polish uses the native subscription bridge without any API key or audio evidence', async () => {
+  const b = background({ provider: 'codex', native: async request => ({ success: true, text: JSON.stringify(polished), provider: 'codex', model: request.model }) });
+  const result = await b.api.handlePodcastReading({ action: 'podcastRefine', segments });
+  assert.equal(result.success, true);
+  assert.equal(result.provider, 'codex');
+  assert.equal(result.model, 'gpt-6.1-sol');
+  assert.equal(result.evidence, undefined);
+  assert.equal(b.calls.length, 0);
+  assert.equal(b.nativeCalls.length, 2);
+  assert.ok(b.nativeCalls.every(request => request.action === 'codexComplete' && request.model === 'gpt-6.1-sol'));
+  await assert.rejects(b.api.handlePodcastReading({ action: 'podcastListen', segments, audioModel: reading.AUDIO_MODELS[0] }), /OpenRouter/);
+});
+
+test('all model and Codex status actions reject website senders before native calls', async () => {
+  const b = background({ provider: 'codex' });
+  for (const action of ['analyzeTranscript', 'translateContent', 'explainSelection', 'saveNote', 'codexStatus', 'checkConfig']) {
+    const result = await b.invoke({ action }, { id: 'test', url: 'https://www.youtube.com/watch?v=example' });
+    assert.equal(result.success, false, action);
+  }
+  assert.equal(b.calls.length, 0);
+  assert.equal(b.nativeCalls.length, 0);
+});
+
+test('trusted options can check Codex login and trusted panels need no API key', async () => {
+  const b = background({ provider: 'codex', native: async () => ({ success: true, authenticated: true, authMode: 'chatgpt' }) });
+  const status = await b.invoke({ action: 'codexStatus' }, { id: 'test', url: 'chrome-extension://test/options.html', tab: { id: 9 } });
+  assert.equal(status.authenticated, true);
+  const config = await b.invoke({ action: 'checkConfig' }, { id: 'test', url: 'chrome-extension://test/podcast-panel.html' });
+  assert.equal(config.hasAiKey, true);
+  assert.equal(config.hasAudioKey, false);
+  assert.equal(config.aiModel, 'gpt-6.1-sol');
+});
+
+test('Codex quota failure is surfaced without fallback to a paid API', async () => {
+  const b = background({ provider: 'codex', native: async () => ({ success: false, code: 'CODEX_LIMIT_REACHED', error: 'Codex 订阅额度已到' }) });
+  await assert.rejects(b.api.requestAiCompletion({ messages: [{ role: 'user', content: '测试' }] }), error => error.code === 'CODEX_LIMIT_REACHED');
+  assert.equal(b.calls.length, 0);
+  assert.equal(b.nativeCalls.length, 1);
 });
