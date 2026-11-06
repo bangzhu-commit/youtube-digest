@@ -9,6 +9,8 @@ let reading = null, readMode = "reading", stopRefine = false, refining = false;
 let overview = null;
 let transcriptionJob = null, transcriptionTimer, transcriptionPending = false, transcriptionReadPending = false;
 let transcriptionNotice = "", panelClosed = false;
+let speakerData = null, speakerJob = null, speakerTimer, speakerPending = false, speakerReadPending = false;
+let speakerNotice = "", speakerNoticeError = false, speakerLoadSequence = 0, speakerJobSequence = 0, speakerSelectWhenComplete = false;
 const key = id => `podcast_digest_${id}`;
 function status(message, error = false) { $("status").textContent = message; $("status").dataset.error = String(error); }
 function button(label, onClick, className = "enhance-btn") {
@@ -29,6 +31,10 @@ function controls() {
   $("transcribeBtn").textContent = ["failed", "cancelled"].includes(transcriptionJob?.status) ? "继续转写" : "转写整集";
   $("cancelTranscribeBtn").hidden = transcriptionJob?.status !== "running";
   $("cancelTranscribeBtn").disabled = transcriptionPending;
+  $("speakerStartBtn").disabled = !transcript || !sourcePath || transcript.origin !== "vault" || busy || transcriptionJob?.status === "running" || speakerPending || speakerJob?.status === "running";
+  $("speakerStartBtn").textContent = ["failed", "cancelled"].includes(speakerJob?.status) || speakerData ? "重新识别说话人" : "按声音区分说话人";
+  $("speakerCancelBtn").hidden = speakerJob?.status !== "running";
+  $("speakerCancelBtn").disabled = speakerPending;
   document.querySelectorAll("[data-audio-review]").forEach(element => { element.disabled = busy; });
 }
 function view(name) {
@@ -154,6 +160,125 @@ async function refreshTextConfig() {
     $("textModelStatus").textContent = `文字精校与摘要：${label}${result.aiModel ? ` / ${result.aiModel}` : ""}。${result.provider === "codex" ? "使用现有 Codex 登录，不需要 API Key；仅处理文字。" : "如需使用订阅，请在设置中选择“本机 Codex（订阅登录）”并保存。"}`;
   } catch {}
 }
+function renderSpeakerStatus() {
+  const job = speakerJob;
+  $("speakerProgress").hidden = !job || !["running", "completed"].includes(job.status) || speakerNoticeError;
+  $("speakerProgress").value = Number.isFinite(job?.progress) ? Math.max(0, Math.min(1, job.progress)) : 0;
+  const noStableSpeaker = job?.status === "completed" && job.speakerCount === 0 || (!job || ["idle", "completed"].includes(job.status)) && speakerData?.speakers.length === 0;
+  const detail = speakerNotice || job?.error || (job?.status === "cancelled" ? "已取消识别，需重新运行；已完成的声音分割在原稿、音频、模型和参数匹配时可复用。已保存的说话人版保留。" : noStableSpeaker ? "暂未得到稳定说话人编号；片段原文保留并标为不确定，可回听核验。" : job?.message) || (speakerData ? "说话人版已独立保存到 Obsidian。编号只区分声音，不代表已确认身份。" : "使用本集音频区分声音，只标编号，不猜身份。需已配置本机识别组件，不会自动下载安装。");
+  $("speakerStatus").textContent = detail + (job?.status === "running" ? ` 关闭侧栏后继续。取消后需重新运行；已完成的声音分割符合条件时可复用。${speakerData ? "当前仍可查看上次保存的版本。" : ""}` : "");
+  $("speakerStatus").dataset.error = String(speakerNoticeError || job?.status === "failed");
+  controls();
+}
+async function loadSpeakers(selectWhenReady = false) {
+  if (!episode || !transcript || panelClosed) return;
+  const run = generation, sequence = ++speakerLoadSequence, id = episode.id, raw = transcript.raw;
+  try {
+    const result = await native("speakerLoad", { episodeId: id });
+    if (run !== generation || sequence !== speakerLoadSequence || transcript?.raw !== raw || panelClosed) return;
+    speakerData = null; speakerNotice = ""; speakerNoticeError = false;
+    if (!result?.success || result.stale || result.manualEdited) throw new Error(result?.error || "说话人版不可用；原稿与已有精校保留，请重新读取。");
+    if (result.found) {
+      const sourceHash = await YTD_READING.fingerprint(raw);
+      if (run !== generation || sequence !== speakerLoadSequence || transcript?.raw !== raw || panelClosed) return;
+      speakerData = YTD_SPEAKERS.validate(result.data, transcript, sourceHash, id);
+      if (selectWhenReady) {
+        if (!busy && !$("thoughtInput").value.trim()) { readMode = "speakers"; $("readMode").value = readMode; await persist(); }
+        else speakerNotice = "说话人版已独立保存，当前操作和感想保留；可在“显示”中选择“说话人版”。";
+      }
+    } else if (speakerJob?.status === "completed") {
+      speakerNotice = "未找到已归档的说话人版，可重新识别；原稿与精校仍保留。";
+    }
+  } catch (error) {
+    if (run === generation && sequence === speakerLoadSequence && transcript?.raw === raw) { speakerData = null; speakerNotice = error.message; speakerNoticeError = true; }
+  } finally {
+    if (run === generation && sequence === speakerLoadSequence && !panelClosed) { renderSpeakerStatus(); renderTranscript(); }
+  }
+}
+function pollSpeakerJob(run = generation) {
+  clearTimeout(speakerTimer);
+  if (run !== generation || panelClosed || speakerJob?.status !== "running") return;
+  speakerTimer = setTimeout(() => { void refreshSpeakerJob(); }, 2500);
+}
+function checkedSpeakerJob(value) {
+  if (!value || !["idle", "running", "completed", "failed", "cancelled"].includes(value.status)) throw new Error("说话人任务状态无效，请重新读取。");
+  return value;
+}
+async function refreshSpeakerJob() {
+  if (!episode || panelClosed || speakerPending || speakerReadPending) return;
+  const run = generation, sequence = speakerJobSequence, id = episode.id;
+  speakerReadPending = true;
+  try {
+    const result = await native("speakerStatus", { episodeId: id });
+    if (run !== generation || sequence !== speakerJobSequence || panelClosed) return;
+    if (!result?.success) throw new Error(result?.error || "无法读取说话人识别进度。");
+    speakerJob = checkedSpeakerJob(result.job);
+    if (speakerJob.status === "running") { speakerNotice = ""; speakerNoticeError = false; }
+    if (speakerJob.status === "completed" && (speakerSelectWhenComplete || !speakerData)) {
+      const select = speakerSelectWhenComplete; speakerSelectWhenComplete = false;
+      await loadSpeakers(select);
+      if (run !== generation || panelClosed) return;
+    }
+    renderSpeakerStatus();
+  } catch (error) {
+    if (run === generation && sequence === speakerJobSequence && !panelClosed) {
+      speakerNotice = `${error.message}${speakerJob?.status === "running" ? " 后台任务可能仍在运行，稍后自动重试。" : ""}`;
+      speakerNoticeError = true; renderSpeakerStatus();
+    }
+  } finally { if (run === generation) { speakerReadPending = false; pollSpeakerJob(run); } }
+}
+async function startSpeakerJob() {
+  if (!episode || !transcript || !sourcePath || transcript.origin !== "vault" || busy || transcriptionJob?.status === "running" || speakerPending || speakerJob?.status === "running") return;
+  const run = generation, id = episode.id;
+  speakerJobSequence++;
+  speakerPending = true; speakerNotice = "正在启动本机说话人识别…"; speakerNoticeError = false; renderSpeakerStatus();
+  try {
+    const result = await native("speakerStart", { episodeId: id });
+    if (run !== generation || panelClosed) return;
+    if (!result?.success) throw new Error(result?.error || "未能启动识别；请先配置本机识别组件，不会自动下载安装。");
+    speakerJob = checkedSpeakerJob(result.job); speakerNotice = ""; speakerSelectWhenComplete = true;
+  } catch (error) {
+    if (run === generation) { speakerNotice = error.message; speakerNoticeError = true; speakerJob = { status: "failed", phase: "failed", progress: 0 }; }
+  } finally {
+    if (run === generation && !panelClosed) {
+      speakerPending = false; renderSpeakerStatus();
+      if (speakerJob?.status === "completed") await refreshSpeakerJob();
+      else pollSpeakerJob(run);
+    }
+  }
+}
+async function cancelSpeakerJob() {
+  if (!episode || speakerPending || speakerJob?.status !== "running") return;
+  const run = generation, id = episode.id;
+  speakerJobSequence++;
+  speakerPending = true; speakerNotice = "正在取消识别；下次需重新运行，已完成的声音分割符合条件时可复用。已有文稿保留。"; renderSpeakerStatus();
+  try {
+    const result = await native("speakerCancel", { episodeId: id });
+    if (run !== generation || panelClosed) return;
+    if (!result?.success) throw new Error(result?.error || "取消请求未完成。");
+    speakerJob = checkedSpeakerJob(result.job); speakerNotice = ""; speakerNoticeError = false;
+  } catch (error) { if (run === generation) { speakerNotice = error.message; speakerNoticeError = true; } }
+  finally { if (run === generation && !panelClosed) { speakerPending = false; renderSpeakerStatus(); pollSpeakerJob(run); } }
+}
+function showSpeakerSource(entryId) {
+  if (!transcript?.entries.some(entry => entry.id === entryId)) return;
+  readMode = "source"; $("readMode").value = readMode; $("searchInput").value = ""; renderTranscript();
+  const row = Array.from($("transcriptList").children).find(element => element.dataset.entryId === entryId);
+  row?.classList.toggle("speaker-source-highlight", true); row?.scrollIntoView?.({ block: "center" });
+  void persist().catch(error => status(error.message, true));
+}
+function renderSpeakers(list, query) {
+  if (!speakerData) { list.append(paragraph(speakerNotice || "还没有可用的说话人版。先完成整集转写并读取素材库，再点击“按声音区分说话人”。", "podcast-empty")); $("searchCount").textContent = ""; return; }
+  list.append(paragraph(`${speakerData.speakers.length ? "" : "暂未得到稳定说话人编号。"}说话人版基于原始转写；精校阅读版可另行切换。依据音频声音区分编号，身份未确认；过短声音暂不编号。文字按 ASR 片段对应，未逐词对齐。换人、重叠或不确定的片段保留原文，不猜文字归属。此版本独立保存，原稿、精校、概览和批注不变。`, "speaker-version-note"));
+  const visible = speakerData.segments.filter(segment => !query || segment.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  $("searchCount").textContent = query ? `${visible.length} 个声段` : "";
+  for (const segment of visible) {
+    const row = document.createElement("article"); row.className = "podcast-row speaker-row"; row.dataset.speakerSegmentId = segment.id; row.dataset.speakerStatus = segment.status;
+    const header = document.createElement("div"); header.className = "podcast-row-header";
+    header.append(button(`${YTD_PODCAST.stamp(segment.start)}–${YTD_PODCAST.stamp(segment.end)}`, () => seek(segment.start), "podcast-time"), paragraph(YTD_SPEAKERS.label(segment, speakerData), "speaker-label"), button("回到原段", () => showSpeakerSource(segment.sourceEntryId)));
+    const copy = paragraph("", "podcast-text"); highlight(copy, segment.text, query); row.append(header, copy); list.append(row);
+  }
+}
 async function seek(seconds) {
   if (seconds === null || !episode) return;
   const expected = episode.id;
@@ -180,9 +305,10 @@ function highlight(element, text, needle) {
 }
 function renderTranscript() {
   const list = $("transcriptList"); list.replaceChildren();
-  $("emptyState").hidden = !!transcript;
+  $("emptyState").hidden = !!transcript || readMode === "speakers";
   const query = $("searchInput").value.trim();
   coverage();
+  if (readMode === "speakers") { renderSpeakers(list, query); return; }
   const visible = (transcript?.entries || []).filter(entry => !query || displayText(entry).toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   $("searchCount").textContent = query ? `${visible.length} 段` : "";
   for (const entry of visible) {
@@ -308,6 +434,7 @@ async function loadVault() {
     const overviewBlocked = result.overviewManualEdited || result.overviewInvalid || result.overviewStale;
     if (overviewBlocked) overview = null;
     if (result.found) {
+      if (transcript?.raw !== result.raw) { speakerData = null; speakerLoadSequence++; }
       transcript = { ...YTD_PODCAST.parseTranscript(result.raw, result.format), format: result.format, origin: "vault" };
       title = result.title || title; sourcePath = result.sourcePath;
       const sourceHash = await YTD_READING.fingerprint(transcript.raw);
@@ -333,6 +460,7 @@ async function loadVault() {
     await persist();
     if (run !== generation) return;
     render(); status(result.readingManualEdited ? "Obsidian 阅读版已有人工修改，已保留该文件；侧栏暂显示原稿。" : result.overviewManualEdited ? "Obsidian 概览已有人工修改，已保留该文件，并清除侧栏旧概览；保存批注不会覆盖它。" : result.overviewInvalid ? "概览数据格式有误，已保留文件并清除侧栏旧概览；请在 Obsidian 核对。" : result.overviewStale ? "概览对应的原稿版本已变化，已清除侧栏旧概览；可根据当前全文重新生成。" : result.readingInvalid ? "阅读版数据格式有误，已保留文件；侧栏显示原稿，请在 Obsidian 核对。" : result.readingStale ? "原稿版本有变化，旧阅读版未自动套用。" : result.found ? "已读取素材库全文。选中原句即可写感想。" : "还没有读取到这集全文。点击“转写整集”生成，或导入已有文稿。");
+    if (result.found) await loadSpeakers();
   } catch (error) {
     if (run === generation) status(`${error.message} 可先导入全文、写批注并导出 Markdown。`, true);
   } finally { if (run === generation) { busy = false; controls(); } }
@@ -464,13 +592,14 @@ async function initialize(tab) {
   if (media?.platform !== "xiaoyuzhou") { window.close(); return; }
   if (episode?.id === media.id && episodeTabId === tab.id) return;
   if (episode) { clearTimeout(draftSaveTimer); void persist().catch(() => {}); }
-  clearTimeout(transcriptionTimer);
+  clearTimeout(transcriptionTimer); clearTimeout(speakerTimer); speakerLoadSequence++;
   const run = ++generation;
   episode = media; episodeTabId = tab.id; panelWindowId = tab.windowId; busy = false; refining = false; stopRefine = true;
   transcriptionJob = null; transcriptionNotice = ""; transcriptionPending = false; transcriptionReadPending = false;
+  speakerData = null; speakerJob = null; speakerNotice = ""; speakerNoticeError = false; speakerPending = false; speakerReadPending = false; speakerSelectWhenComplete = false;
   transcript = null; annotations = []; sourcePath = ""; title = "小宇宙节目"; channel = "";
   reading = null; overview = null; readMode = "reading"; $("readMode").value = readMode; $("audioModel").value = YTD_READING.AUDIO_MODELS[0];
-  closeEditor(); $("overview").replaceChildren(); $("searchInput").value = ""; render(); renderTranscription();
+  closeEditor(); $("overview").replaceChildren(); $("searchInput").value = ""; render(); renderTranscription(); renderSpeakerStatus();
   try {
     const cached = (await chrome.storage.local.get(key(media.id)))[key(media.id)];
     if (run !== generation) return;
@@ -482,7 +611,7 @@ async function initialize(tab) {
         if (run !== generation) return;
         if (cached.overview.sourceHash === sourceHash) overview = cached.overview;
       }
-      readMode = cached.readMode === "source" ? "source" : "reading"; $("readMode").value = readMode;
+      readMode = ["source", "speakers"].includes(cached.readMode) ? cached.readMode : "reading"; $("readMode").value = readMode;
       if (YTD_READING.AUDIO_MODELS.includes(cached.audioModel)) $("audioModel").value = cached.audioModel;
       annotations = (cached.annotations || []).map(note => ({ ...YTD_PODCAST.annotation(note), entryId: note.entryId, saved: !!note.saved }));
       title = cached.title || title; channel = cached.channel || ""; sourcePath = cached.sourcePath || ""; render();
@@ -504,6 +633,8 @@ async function initialize(tab) {
       $("editorStatus").textContent = "已恢复上次未提交的感想。";
     }
     await refreshTranscription();
+    if (run !== generation) return;
+    await refreshSpeakerJob();
     if (run === generation) void refreshTextConfig();
   } catch (error) { if (run === generation) status(error.message, true); }
 }
@@ -511,6 +642,8 @@ document.querySelectorAll("[data-view]").forEach(element => element.addEventList
 $("reloadBtn").addEventListener("click", loadVault);
 $("transcribeBtn").addEventListener("click", startTranscription);
 $("cancelTranscribeBtn").addEventListener("click", cancelTranscription);
+$("speakerStartBtn").addEventListener("click", startSpeakerJob);
+$("speakerCancelBtn").addEventListener("click", cancelSpeakerJob);
 $("archiveBtn").addEventListener("click", archive);
 $("exportBtn").addEventListener("click", download);
 $("analyzeBtn").addEventListener("click", analyze);
@@ -531,7 +664,7 @@ $("thoughtInput").addEventListener("input", () => {
   draftSaveTimer = setTimeout(() => persist(id, captured).catch(error => status(`草稿未保存：${error.message}`, true)), 250);
 });
 window.addEventListener("focus", refreshTextConfig);
-window.addEventListener("pagehide", () => { panelClosed = true; clearTimeout(draftSaveTimer); clearTimeout(transcriptionTimer); void persist().catch(() => {}); });
+window.addEventListener("pagehide", () => { panelClosed = true; clearTimeout(draftSaveTimer); clearTimeout(transcriptionTimer); clearTimeout(speakerTimer); void persist().catch(() => {}); });
 $("importFile").addEventListener("change", async event => {
   const file = event.target.files[0], run = generation;
   if (!file || !episode) return;
@@ -544,11 +677,12 @@ $("importFile").addEventListener("change", async event => {
     const next = { ...YTD_PODCAST.parseTranscript(raw, format), format, origin: "import" };
     await persist(episode.id, { ...snapshot(), transcript: next, sourcePath: "", reading: null, overview: null });
     if (run !== generation) return;
-    transcript = next; sourcePath = ""; reading = null; overview = null; closeEditor(); render(); status(`已导入 ${transcript.entries.length} 段全文。`);
+    transcript = next; sourcePath = ""; reading = null; overview = null; speakerData = null; speakerLoadSequence++; closeEditor(); render(); status(`已导入 ${transcript.entries.length} 段全文。`);
   } catch (error) { status(error.message, true); }
   finally { event.target.value = ""; }
 });
 $("transcriptList").addEventListener("mouseup", event => {
+  if (readMode === "speakers") return;
   if (event.target.closest("button")) return;
   const selection = window.getSelection();
   const quote = selection?.toString().trim();

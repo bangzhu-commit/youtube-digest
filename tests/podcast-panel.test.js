@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { randomUUID, webcrypto } = require('node:crypto');
+const { randomUUID, webcrypto, createHash } = require('node:crypto');
 const media = require('../media-platform.js');
 const core = require('../podcast-core.js');
 const A = 'a'.repeat(24), B = 'b'.repeat(24);
@@ -19,7 +19,7 @@ class Element {
   focus() {}
 }
 
-function panel({ cache = {}, load = async id => loaded(id), write = async () => {}, request = async () => ({}), nativeRequest = async () => ({ success: true, job: { status: 'idle', progress: 0 } }), config = { provider: 'codex', aiModel: '', hasAiKey: true } } = {}) {
+function panel({ cache = {}, load = async id => loaded(id), write = async () => {}, request = async () => ({}), nativeRequest = async () => ({ success: true, job: { status: 'idle', progress: 0 } }), speakerRequest = async message => message.action === 'speakerLoad' ? { success: true, found: false } : { success: true, job: { status: 'idle', progress: 0 } }, config = { provider: 'codex', aiModel: '', hasAiKey: true } } = {}) {
   const elements = new Map(), windowListeners = {}, timers = new Map(); let timerId = 0;
   const element = id => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
   const audioButtons = () => {
@@ -33,12 +33,12 @@ function panel({ cache = {}, load = async id => loaded(id), write = async () => 
   };
   element('annotationEditor').hidden = true;
   const sandbox = {
-    console, URL, Blob, TextEncoder, crypto: { randomUUID, subtle: webcrypto.subtle }, setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id; }, clearTimeout: id => timers.delete(id), YTD_MEDIA: media, YTD_PODCAST: core, YTD_READING: require('../podcast-reading.js'),
+    console, URL, Blob, TextEncoder, crypto: { randomUUID, subtle: webcrypto.subtle }, setTimeout: fn => { const id = ++timerId; timers.set(id, fn); return id; }, clearTimeout: id => timers.delete(id), YTD_MEDIA: media, YTD_PODCAST: core, YTD_READING: require('../podcast-reading.js'), YTD_SPEAKERS: require('../podcast-speakers.js'),
     document: { getElementById: element, querySelectorAll: selector => selector === '[data-audio-review]' ? audioButtons() : [], createElement: () => new Element(), createTextNode: text => ({ textContent: text }) },
     window: { addEventListener: (name, fn) => windowListeners[name] = fn, close() {} },
     chrome: {
       storage: { local: { get: async key => structuredClone({ [key]: cache[key] }), set: async values => { await write(values); Object.assign(cache, structuredClone(values)); } } },
-      runtime: { sendMessage: async message => message.action === 'podcastNative' ? message.request.action === 'load' ? load(message.request.episodeId) : nativeRequest(message.request) : message.action === 'checkConfig' ? config : request(message) },
+      runtime: { sendMessage: async message => message.action === 'podcastNative' ? message.request.action === 'load' ? load(message.request.episodeId) : message.request.action.startsWith('speaker') ? speakerRequest(message.request) : nativeRequest(message.request) : message.action === 'checkConfig' ? config : request(message) },
       tabs: { query: () => new Promise(() => {}), sendMessage: async () => ({}), onActivated: { addListener() {} }, onUpdated: { addListener() {} } },
     },
   };
@@ -120,13 +120,17 @@ test('the file bridge rejects website/content-script senders and invalid request
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../background.js'), 'utf8'), sandbox);
   const message = { action: 'podcastNative', request: { action: 'load', episodeId: A } };
   const invoke = (request, sender) => new Promise(resolve => messageListener(request, sender, resolve));
-  for (const sender of [{ id: 'test', url: tab(A).url }, { id: 'other', url: 'chrome-extension://test/podcast-panel.html' }, { id: 'test', url: 'chrome-extension://test/options.html' }]) {
-    assert.equal((await invoke(message, sender)).success, false);
+  const localActions = ['load', 'speakerStart', 'speakerStatus', 'speakerCancel', 'speakerLoad'];
+  for (const action of localActions) {
+    for (const sender of [{ id: 'test', url: tab(A).url }, { id: 'other', url: 'chrome-extension://test/podcast-panel.html' }, { id: 'test', url: 'chrome-extension://test/options.html' }]) {
+      assert.equal((await invoke({ ...message, request: { ...message.request, action } }, sender)).success, false);
+    }
   }
   const trusted = { id: 'test', url: 'chrome-extension://test/podcast-panel.html' };
   assert.equal((await invoke({ ...message, request: { action: 'delete', episodeId: A } }, trusted)).success, false);
   assert.equal(nativeCalls, 0);
-  assert.equal((await invoke(message, trusted)).success, true); assert.equal(nativeCalls, 1);
+  for (const action of localActions) assert.equal((await invoke({ ...message, request: { ...message.request, action } }, trusted)).success, true);
+  assert.equal(nativeCalls, localActions.length);
 });
 
 test('partial reading survives failure and resumes without sending personal thoughts to the model', async () => {
@@ -347,3 +351,161 @@ for (const [field, value] of [['title', ''], ['title', '  \n'], ['summary', ''],
     assert.match(p.element('status').textContent, /概览内容为空或格式无效/);
   });
 }
+
+function speakerLoaded(id) {
+  const raw = loaded(id).raw, text = core.parseTranscript(raw, 'md').entries[0].text;
+  return { success: true, found: true, data: { version: 'podcast-speakers-v1', episodeId: id, sourceHash: createHash('sha256').update(raw).digest('hex'), offsetUnit: 'unicode-code-point', wordAlignment: false, duration: 20, speakers: [{ id: 'S1', label: '说话人 1' }], segments: [{ id: 's-0', sourceEntryId: 'p-0', sourceStart: 0, sourceEnd: Array.from(text).length, start: 2, end: 15, text, speakerIds: ['S1'], status: 'single' }] } };
+}
+function speakerRows(p) { return p.element('transcriptList').children.filter(element => element.dataset?.speakerSegmentId); }
+
+test('an all-uncertain completed speaker view reports no stable numbers and preserves original text', async () => {
+  const p = panel({ speakerRequest: async message => {
+    if (message.action !== 'speakerLoad') return jobResult('completed', { speakerCount: 0, message: '成功区分 0 人' });
+    const result = speakerLoaded(message.episodeId);
+    result.data.speakers = [];
+    for (const segment of result.data.segments) Object.assign(segment, { status: 'uncertain', speakerIds: [] });
+    return result;
+  } });
+  await p.sandbox.initialize(tab(A));
+  p.element('readMode').value = 'speakers'; p.element('readMode').listeners.change();
+  assert.match(p.element('speakerStatus').textContent, /暂未得到稳定说话人编号/);
+  assert.doesNotMatch(p.element('speakerStatus').textContent, /成功区分|0 人/);
+  assert.equal(p.element('speakerStatus').dataset.error, 'false');
+  assert.match(p.element('transcriptList').children[0].textContent, /过短声音暂不编号/);
+  assert.equal(speakerRows(p)[0].children[0].children[1].textContent, '说话人不确定');
+  assert.equal(speakerRows(p)[0].children[1].textContent, A + '原话');
+  assert.equal(p.cache[`podcast_digest_${A}`].transcript.raw, loaded(A).raw);
+});
+
+test('speaker completion selects a separate read-only view without altering source, refinement, overview or notes', async () => {
+  let complete = false; const modelCalls = [], nativeCalls = [];
+  const p = panel({ request: async message => {
+    modelCalls.push(message.action);
+    if (message.action === 'podcastRefine') return { success: true, provider: 'codex', model: 'test', segments: message.segments.map(item => ({ ...item, issues: [] })) };
+    return { success: true, provider: 'codex', model: 'test', analysis: { chapters: [{ title: '概览', summary: '原有概览。', timestampSeconds: 2 }] } };
+  }, speakerRequest: async message => {
+    nativeCalls.push(message.action);
+    if (message.action === 'speakerLoad') return complete ? speakerLoaded(message.episodeId) : { success: true, found: false };
+    return jobResult(complete ? 'completed' : message.action === 'speakerStart' ? 'running' : 'idle');
+  } });
+  await p.sandbox.initialize(tab(A)); await p.sandbox.refine(); await p.sandbox.analyze();
+  p.sandbox.openEditor(A + '原话', 2, 'p-0'); p.element('thoughtInput').value = '原有感想'; await p.sandbox.saveAnnotation();
+  const before = structuredClone(p.cache[`podcast_digest_${A}`]), count = modelCalls.length;
+  await p.sandbox.startSpeakerJob(); assert.equal(p.element('speakerStartBtn').disabled, true);
+  complete = true; await p.sandbox.refreshSpeakerJob();
+  assert.equal(p.element('readMode').value, 'speakers'); assert.equal(speakerRows(p).length, 1);
+  assert.match(p.element('transcriptList').children[0].textContent, /说话人版基于原始转写；精校阅读版可另行切换/);
+  assert.equal(p.audioButtons().length, 0);
+  assert.equal(speakerRows(p)[0].dataset.entryId, undefined);
+  assert.equal(speakerRows(p)[0].children[0].children[1].textContent, '说话人 1');
+  for (const name of ['transcript', 'reading', 'overview', 'annotations']) assert.deepEqual(p.cache[`podcast_digest_${A}`][name], before[name]);
+  assert.equal(modelCalls.length, count);
+  assert.equal(Object.hasOwn(p.cache[`podcast_digest_${A}`], 'speakerData'), false);
+  p.element('transcriptList').listeners.mouseup({});
+  assert.equal(p.element('annotationEditor').hidden, true);
+  speakerRows(p)[0].children[0].children[2].listeners.click(); await p.flush();
+  assert.equal(p.element('readMode').value, 'source');
+  assert.equal(p.element('transcriptList').children[0].dataset.entryId, 'p-0');
+  assert.equal(nativeCalls.includes('save'), false);
+});
+
+test('missing local speaker components report a clear error and never call a model or installer', async () => {
+  const calls = [], modelCalls = [];
+  const p = panel({ request: async message => { modelCalls.push(message); return {}; }, speakerRequest: async message => {
+    calls.push(message.action);
+    if (message.action === 'speakerLoad') return { success: true, found: false };
+    if (message.action === 'speakerStart') return { success: false, error: '尚未配置本地声音分割模型。请先完成本机安装；识别不会自动下载工具或模型。' };
+    return jobResult('idle');
+  } });
+  await p.sandbox.initialize(tab(A)); await p.sandbox.startSpeakerJob();
+  assert.match(p.element('speakerStatus').textContent, /尚未配置本地声音分割模型/);
+  assert.match(p.element('speakerStatus').textContent, /不会自动下载/);
+  assert.equal(p.element('speakerStatus').dataset.error, 'true');
+  assert.equal(p.element('speakerStartBtn').disabled, false);
+  assert.deepEqual(calls, ['speakerLoad', 'speakerStatus', 'speakerStart']);
+  assert.deepEqual(modelCalls, []);
+});
+
+test('speaker cancellation explains reusable segmentation and keeps a saved version', async () => {
+  let cancelled = false;
+  const p = panel({ speakerRequest: async message => {
+    if (message.action === 'speakerLoad') return speakerLoaded(message.episodeId);
+    if (message.action === 'speakerCancel') { cancelled = true; return jobResult('running', { message: '正在停止；下次需重新运行。' }); }
+    return jobResult(cancelled ? 'cancelled' : 'running', { phase: 'refining', message: '正在处理声音分组。' });
+  } });
+  await p.sandbox.initialize(tab(A));
+  assert.match(p.element('speakerStatus').textContent, /正在处理声音分组/);
+  assert.match(p.element('speakerStatus').textContent, /取消后需重新运行；已完成的声音分割符合条件时可复用/);
+  p.element('readMode').value = 'speakers'; p.element('readMode').listeners.change();
+  await p.sandbox.cancelSpeakerJob(); await p.sandbox.refreshSpeakerJob();
+  assert.equal(p.element('speakerStartBtn').textContent, '重新识别说话人');
+  assert.match(p.element('speakerStatus').textContent, /已取消识别，需重新运行；已完成的声音分割/);
+  assert.match(p.element('speakerStatus').textContent, /原稿、音频、模型和参数匹配时可复用/);
+  assert.doesNotMatch(p.element('speakerStatus').textContent, /从头|断点|窗口续/);
+  assert.equal(speakerRows(p).length, 1);
+  assert.equal(p.timers.size, 0);
+});
+
+for (const action of ['speakerStart', 'speakerCancel']) {
+  test(`a late status poll cannot undo ${action}`, async () => {
+    let hold = false, release;
+    const initial = action === 'speakerStart' ? 'idle' : 'running';
+    const updated = action === 'speakerStart' ? 'running' : 'cancelled';
+    const p = panel({ speakerRequest: async message => {
+      if (message.action === 'speakerLoad') return { success: true, found: false };
+      if (message.action === action) return jobResult(updated);
+      if (hold) return new Promise(resolve => release = resolve);
+      return jobResult(initial);
+    } });
+    await p.sandbox.initialize(tab(A)); hold = true;
+    const old = p.sandbox.refreshSpeakerJob();
+    await p.sandbox[action === 'speakerStart' ? 'startSpeakerJob' : 'cancelSpeakerJob']();
+    release(jobResult(initial)); await old;
+    assert.equal(p.element('speakerStartBtn').disabled, updated === 'running');
+    assert.equal(p.element('speakerCancelBtn').hidden, updated !== 'running');
+    assert.equal(p.timers.size, updated === 'running' ? 1 : 0);
+  });
+}
+
+for (const flag of ['stale', 'manualEdited']) {
+  test(`${flag} speaker data is hidden while original text remains available`, async () => {
+    let flagged = false;
+    const p = panel({ speakerRequest: async message => message.action === 'speakerLoad' ? flagged ? { success: true, found: true, [flag]: true, error: '已有文件变化，请在 Obsidian 核对。' } : speakerLoaded(message.episodeId) : jobResult('idle') });
+    await p.sandbox.initialize(tab(A));
+    p.element('readMode').value = 'speakers'; p.element('readMode').listeners.change();
+    assert.equal(speakerRows(p).length, 1);
+    flagged = true; await p.sandbox.loadSpeakers();
+    assert.equal(speakerRows(p).length, 0);
+    assert.match(p.element('speakerStatus').textContent, /已有文件变化/);
+    assert.equal(p.cache[`podcast_digest_${A}`].transcript.raw, loaded(A).raw);
+  });
+}
+
+test('late speaker load from an earlier episode cannot replace the current independent version', async () => {
+  let hold = false, release;
+  const p = panel({ speakerRequest: message => {
+    if (message.action !== 'speakerLoad') return Promise.resolve(jobResult('idle'));
+    if (hold && message.episodeId === A) return new Promise(resolve => release = resolve);
+    return Promise.resolve(speakerLoaded(message.episodeId));
+  } });
+  await p.sandbox.initialize(tab(A)); hold = true;
+  const old = p.sandbox.loadSpeakers(true);
+  await p.sandbox.initialize(tab(B)); release(speakerLoaded(A)); await old;
+  p.element('readMode').value = 'speakers'; p.element('readMode').listeners.change();
+  assert.equal(speakerRows(p)[0].children[1].textContent, B + '原话');
+  assert.equal(p.element('podcastTitle').textContent, B);
+});
+
+test('closing the panel stops polling without cancelling speaker recognition', async () => {
+  const calls = [];
+  const p = panel({ speakerRequest: async message => { calls.push(message.action); return message.action === 'speakerLoad' ? { success: true, found: false } : jobResult('running'); } });
+  await p.sandbox.initialize(tab(A)); assert.equal(p.timers.size, 1);
+  p.windowListeners.pagehide(); await p.flush();
+  assert.equal(p.timers.size, 0); assert.equal(calls.includes('speakerCancel'), false);
+});
+
+test('an unarchived imported transcript cannot start speaker identification against a different canonical source', async () => {
+  const p = panel(); await p.sandbox.initialize(tab(A));
+  await p.element('importFile').listeners.change({ target: { value: '', files: [{ name: 'manual.txt', size: 20, text: async () => '另行整理的原稿。' }] } });
+  assert.equal(p.element('speakerStartBtn').disabled, true);
+});

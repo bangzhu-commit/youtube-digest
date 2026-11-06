@@ -35,13 +35,18 @@
   <main class="content" id="podcastContent">
     <section data-podcast-view="transcript">
       <div class="reading-toolbar">
-        <label>显示 <select id="readMode" aria-label="原稿或阅读版"><option value="reading">精校阅读版</option><option value="source">原始转写</option></select></label>
+        <label>显示 <select id="readMode" aria-label="全文版本"><option value="reading">精校阅读版</option><option value="source">原始转写</option><option value="speakers">说话人版</option></select></label>
         <label><select id="refineScope" aria-label="精校范围"><option value="preview">开头试读</option><option value="all">继续精校全文</option></select></label>
         <button class="enhance-btn" id="refineBtn" type="button" disabled>生成阅读版</button>
         <button class="enhance-btn" id="stopRefineBtn" type="button" hidden>本批完成后停止</button>
       </div>
       <p id="readingStatus" class="podcast-status" aria-live="polite"></p>
       <p id="textModelStatus" class="podcast-status">文字精校与摘要使用设置中选择的服务。</p>
+      <div class="speaker-tools">
+        <div class="speaker-actions"><button class="enhance-btn" id="speakerStartBtn" type="button" disabled>按声音区分说话人</button><button class="enhance-btn" id="speakerCancelBtn" type="button" hidden>取消识别</button></div>
+        <progress id="speakerProgress" max="1" value="0" aria-label="说话人识别进度" hidden></progress>
+        <p id="speakerStatus" class="podcast-status" role="status" aria-live="polite">使用本集音频区分声音，只标编号，不猜身份。需已配置本机识别组件，不会自动下载安装。</p>
+      </div>
       <details class="audio-settings"><summary>可选：疑难段落听音复核</summary><p>听音复核与整集转写、文字精校分开。此功能需在设置中选择 OpenRouter 并配置 API Key，会先用本地 Whisper 转写，再把最多 90 秒音频交给所选 Gemini 模型，另外按服务价格计费。整集转写完成后会保留本地原音频。</p><label>听音模型 <select id="audioModel"><option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option><option value="google/gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite Preview</option></select></label></details>
       <p id="emptyState" class="podcast-empty">点击“转写整集”，用本地 Whisper 将本集音频转成带时间戳的全文。长节目需要等待，关闭侧栏后仍会继续。也可以读取素材库或导入已有文稿；节目简介不会作为全文。</p>
       <div class="podcast-search"><input id="searchInput" type="search" placeholder="搜索全文" aria-label="搜索全文" /><output id="searchCount" aria-live="polite"></output></div>
@@ -65,6 +70,7 @@
   <script src="media-platform.js"></script>
   <script src="podcast-core.js"></script>
   <script src="podcast-reading.js"></script>
+  <script src="podcast-speakers.js"></script>
   <script src="podcast-panel.js"></script>
 </body>
 </html>

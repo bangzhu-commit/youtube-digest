@@ -409,7 +409,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     const request = message.request;
-    if (!request || !["load", "save", "audioClip", "transcribeStart", "transcribeStatus", "transcribeCancel"].includes(request.action) ||
+    if (!request || !["load", "save", "audioClip", "transcribeStart", "transcribeStatus", "transcribeCancel", "speakerStart", "speakerStatus", "speakerCancel", "speakerLoad"].includes(request.action) ||
         !/^[a-f0-9]{24}$/.test(request.episodeId || "") ||
         new TextEncoder().encode(JSON.stringify(request)).length > 900000) {
       sendResponse({ success: false, error: "本机请求格式无效或文稿过大。" });

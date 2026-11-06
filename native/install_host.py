@@ -15,6 +15,9 @@ def main():
     parser.add_argument('--vault', required=True)
     parser.add_argument('--config-dir', type=Path)
     parser.add_argument('--host-dir', type=Path)
+    parser.add_argument('--diarization-python', type=Path, help='Already installed isolated speaker-recognition Python; never installs dependencies.')
+    parser.add_argument('--segmentation-model', type=Path, help='Already downloaded local segmentation ONNX model.')
+    parser.add_argument('--speaker-embedding-model', type=Path, help='Already downloaded local speaker embedding ONNX model.')
     parser.add_argument('--allow-fake-ip-dns', action=argparse.BooleanOptionalAction, default=None,
                         help='Allow 198.18.0.0/15 proxy Fake-IP for the exact supported HTTPS hosts; default preserves the previous setting.')
     args = parser.parse_args()
@@ -25,6 +28,14 @@ def main():
         parser.error('vault directory does not exist')
     if sys.platform != 'darwin' and (args.config_dir is None or args.host_dir is None):
         parser.error('provide config-dir and host-dir on platforms other than macOS')
+    speaker_config = {}
+    for key, value in (('diarizationPython', args.diarization_python), ('segmentationModel', args.segmentation_model),
+                       ('speakerEmbeddingModel', args.speaker_embedding_model)):
+        if value is not None:
+            value = value.expanduser().resolve()
+            if not value.is_file():
+                parser.error(key + ' must be an existing local file; no download or installation was attempted')
+            speaker_config[key] = str(value)
     state = args.config_dir or Path.home() / 'Library/Application Support/YouTube Digest'
     hosts = args.host_dir or Path.home() / 'Library/Application Support/Google/Chrome/NativeMessagingHosts'
     state.mkdir(parents=True, exist_ok=True)
@@ -40,7 +51,7 @@ def main():
         except (ValueError, UnicodeError) as error:
             parser.error('existing bridge configuration is invalid; preserve and inspect it before reinstalling')
     allow_fake_ip = previous.get('allowFakeIpDns') is True if args.allow_fake_ip_dns is None else args.allow_fake_ip_dns
-    config.write_text(json.dumps({**previous, 'vault': str(vault),
+    config.write_text(json.dumps({**previous, **speaker_config, 'vault': str(vault),
                                  'ffmpeg': shutil.which('ffmpeg') or previous.get('ffmpeg'),
                                  'codex': shutil.which('codex') or previous.get('codex'),
                                  'python': sys.executable, 'allowFakeIpDns': allow_fake_ip},

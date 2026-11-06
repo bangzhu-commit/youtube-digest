@@ -17,7 +17,7 @@ This fork extends [Zara Zhang's original project](https://github.com/zarazhangru
 
 Click the extension icon on a Xiaoyuzhou episode page. The reader loads an existing Markdown source from `知识库/原始素材库`, matched by episode URL and an explicit transcript heading. You can also import Markdown, TXT, SRT, VTT or segment JSON. Shownotes and media references are not transcripts. Reading and annotations need no AI key; model processing runs only on request.
 
-Click **整集转写** to download the selected public episode and transcribe its complete audio locally with cached faster-whisper medium. Progress is saved; the task continues after the panel closes and can be cancelled or resumed. Existing sources and manually edited files are preserved. Audio, timestamped checkpoints and final Markdown stay in the selected vault. No speech API is charged. FFmpeg, faster-whisper and the medium model must already be installed/cached; missing prerequisites are reported, not installed automatically. Downloads are limited to supported public Xiaoyuzhou media hosts.
+Click **转写整集** to download the selected public episode and transcribe its complete audio locally with cached faster-whisper medium. Progress is saved; the task continues after the panel closes and can be cancelled or resumed. Existing sources and manually edited files are preserved. Audio, timestamped checkpoints and final Markdown stay in the selected vault. No speech API is charged. FFmpeg, faster-whisper and the medium model must already be installed/cached; missing prerequisites are reported, not installed automatically. Downloads are limited to supported public Xiaoyuzhou media hosts.
 
 For text processing, select **本机 Codex（订阅登录）** in Settings, check the connection and save. The bridge invokes `codex exec` with an existing ChatGPT login, without API-key fallback. Codex subscription limits apply. This is a local client for cloud inference, not an offline model: transcript text and task prompts are sent to OpenAI. The browser never reads account credentials. Login and installation remain manual. Text polishing cannot certify what the audio actually said.
 
@@ -39,7 +39,7 @@ python3 native/install_host.py --extension-id YOUR_EXTENSION_ID --vault "/path/t
 
 Only that extension ID, vault and installed FFmpeg/Codex paths are registered. The host exposes scoped reads, saves, fixed-episode transcription jobs, audio clips and bounded Codex text requests. There is no arbitrary file, shell-command or URL API. Audio processing executes fixed FFmpeg arguments and cached-only Whisper. Private configuration stays in Application Support outside the repository and ZIP. Keep this source folder. Other systems require explicit `--config-dir` and `--host-dir` and have not been browser-tested.
 
-Rerun the host installer and reload the extension after upgrading, then refresh Xiaoyuzhou. Version 1.5.0 retains the existing browser permissions. Timestamp playback uses the current page's audio player; start playback on the episode page first if needed.
+Rerun the host installer and reload the extension after upgrading, then refresh Xiaoyuzhou. Version 1.6.0 retains the existing browser permissions. Timestamp playback uses the current page's audio player; start playback on the episode page first if needed.
 
 ## Install and configure
 
@@ -50,6 +50,14 @@ Open the extension's Settings. Select local Codex to use an existing ChatGPT sub
 API endpoints: OpenRouter `https://openrouter.ai/api/v1/chat/completions`; 302.ai `https://api.302.ai/v1/chat/completions`; DeepSeek `https://api.deepseek.com/chat/completions`. Local Codex uses Native Messaging and its own subscription login. Arbitrary custom API origins are not enabled. If your system proxy uses Fake-IP DNS, explicitly rerun the host installer with `--allow-fake-ip-dns`; `--no-allow-fake-ip-dns` disables it. This permits only the benchmark range for the fixed HTTPS download hosts, not arbitrary private addresses.
 
 Select **YouTube page** for subtitles. This is the default and never sends requests to Supadata. If you choose a Supadata mode, enter a separate Supadata key. Supadata requests force `mode=native` and never purchase generated transcripts. Inspect each provider's current pricing in its dashboard.
+
+### Local speaker view
+
+For episodes transcribed by Digest, “按声音区分说话人” reuses the saved audio and fine ASR timestamps to create an independent speaker view. Local segmentation followed by longer, clean voice embeddings assigns anonymous speaker numbers across the episode; it does not infer names, roles, or cross-episode identities and does not force exactly two speakers. Voice clusters with less than three seconds of cumulative audio, insufficient clean evidence, or unstable voice matching receive no stable speaker number. Speech crossing a speaker boundary, overlapping speech, or insufficient alignment remains mixed or uncertain. Text is never split by guessing who would say it. Select “显示 → 说话人版” after completion; this view uses the original transcript, while polished text remains a separate view. “回到原段” returns to the source paragraph for annotation.
+
+Speaker processing uses no cloud model or tokens. The pinned setup supports macOS Apple Silicon with Python 3.14 and reuses existing NumPy and FFmpeg. Run `python3 native/setup_diarization.py --check` to inspect prerequisites; only the explicit `--install` command downloads the pinned, SHA-256-verified dependencies and models into a separate local environment. Recognition never installs or downloads them. Jobs continue when the panel closes. Restarting can reuse completed segmentation when source, audio, models, and parameters still match; unfinished voice-embedding analysis is recomputed.
+
+The derived Markdown and `speakers-v1.json` live under the reading-workbench directory. Original transcripts, reading polish, overviews and quotation anchors remain unchanged. Source/audio mismatch and manual edits prevent silent reuse or replacement. Acoustic labels and boundaries are machine estimates and require listening when accuracy matters.
 
 ## Translation quality
 

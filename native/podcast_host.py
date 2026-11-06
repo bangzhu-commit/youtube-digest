@@ -680,6 +680,12 @@ class Vault:
         if message.get('action') in {'transcribeStart', 'transcribeStatus', 'transcribeCancel'}:
             import transcription_jobs
             return transcription_jobs.handle(self.config, message)
+        if message.get('action') == 'speakerLoad':
+            import speaker_data
+            return speaker_data.load(self.config, episode_id)
+        if message.get('action') in {'speakerStart', 'speakerStatus', 'speakerCancel'}:
+            import diarization_jobs
+            return diarization_jobs.handle(self.config, message)
         raise BridgeError('不支持的操作。')
 
 
@@ -711,7 +717,8 @@ def serve(config_path, input_stream=None, output_stream=None):
             message = json.loads(read_exact(incoming, length))
             # Long Codex work and independently locked ASR jobs must not block reads.
             if isinstance(message, dict) and message.get('action') in {
-                    'codexComplete', 'codexStatus', 'transcribeStart', 'transcribeStatus', 'transcribeCancel'}:
+                    'codexComplete', 'codexStatus', 'transcribeStart', 'transcribeStatus', 'transcribeCancel',
+                    'speakerLoad', 'speakerStart', 'speakerStatus', 'speakerCancel'}:
                 result = vault.handle(message)
             else:
                 # Serialize source/annotation writes across one-process-per-message hosts.

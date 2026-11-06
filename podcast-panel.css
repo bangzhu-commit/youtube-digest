@@ -16,6 +16,16 @@
 .transcription-task progress { display: block; width: 100%; height: 7px; margin: 9px 0; accent-color: var(--accent); }
 .transcription-task .podcast-status { margin: 0; line-height: 1.7; }
 .overview-coverage { color: var(--text-secondary); font-size: 12px; margin: 12px 0; }
+.speaker-tools { margin: 10px 0 14px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+.speaker-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.speaker-tools progress { display: block; width: 100%; height: 7px; margin: 9px 0; accent-color: var(--sage); }
+.speaker-tools .podcast-status { margin-top: 7px; line-height: 1.7; }
+.speaker-version-note { font-size: 12px; line-height: 1.7; color: var(--text-secondary); margin: 8px 0 14px; }
+.speaker-label { font-weight: 600; color: var(--text); }
+.speaker-row[data-speaker-status="mixed"] .speaker-label,
+.speaker-row[data-speaker-status="overlap"] .speaker-label,
+.speaker-row[data-speaker-status="uncertain"] .speaker-label { color: #95472f; }
+.speaker-source-highlight { background: var(--accent-dim); outline: 1px solid var(--border-heavy); }
 .podcast-status { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
 .podcast-status[data-error="true"] { color: #95472f; }
 .import-label { cursor: pointer; display: inline-flex; align-items: center; }
